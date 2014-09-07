@@ -212,8 +212,12 @@ class UnladenHTTP():
         self.http.end_headers()
         if self.http.command == 'HEAD':
             return
-        cipher = Crypto.Cipher.AES.new(randkey, Crypto.Cipher.AES.MODE_ECB)
+        block_size = Crypto.Cipher.AES.block_size
+        cipher = None
         with open(os.path.join(self.data_dir, 'content', fn_uuid[0:2], fn_uuid[2:4], fn_uuid), 'r') as r:
+            if not cipher:
+                iv = r.read(block_size)
+                cipher = Crypto.Cipher.AES.new(randkey, Crypto.Cipher.AES.MODE_CBC, iv)
             bytesread = 0
             blk = r.read(1024)
             bytesread = bytesread + len(blk)
@@ -269,9 +273,12 @@ class UnladenHTTP():
         contentdir = os.path.join(self.data_dir, 'content', fn_uuid[0:2], fn_uuid[2:4])
         if not os.path.isdir(contentdir):
             os.makedirs(contentdir)
-        cipher = Crypto.Cipher.AES.new(randkey, Crypto.Cipher.AES.MODE_ECB)
+        block_size = Crypto.Cipher.AES.block_size
+        iv = os.urandom(block_size)
+        cipher = Crypto.Cipher.AES.new(randkey, Crypto.Cipher.AES.MODE_CBC, iv)
         m = hashlib.md5()
         with open(os.path.join(contentdir, fn_uuid), 'w') as w:
+            w.write(iv)
             bytesread = 0
             toread = 1024
             if (bytesread + toread) > length:
@@ -280,8 +287,8 @@ class UnladenHTTP():
             bytesread = bytesread + len(blk)
             while blk:
                 m.update(blk)
-                if (len(blk) % 16) > 0:
-                    blk = blk + '\0'*(16 - (len(blk) % 16))
+                if (len(blk) % block_size) > 0:
+                    blk = blk + '\0'*(block_size - (len(blk) % block_size))
                 w.write(cipher.encrypt(blk))
                 toread = 1024
                 if (bytesread + toread) > length:
@@ -490,9 +497,3 @@ class UnladenHTTPServer(SocketServer.ThreadingMixIn, BaseHTTPServer.HTTPServer):
 def run():
     httpd = UnladenHTTPServer(('::', 52777), UnladenHTTPHandler)
     httpd.serve_forever()
-
-if __name__ == '__main__':
-    try:
-        run()
-    except KeyboardInterrupt:
-        sys.exit(0)
