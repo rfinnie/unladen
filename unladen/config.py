@@ -19,6 +19,7 @@
 
 import json
 import os
+import copy
 
 DEFAULT_CONFIG = {
     'data_dir': os.path.join(os.path.expanduser('~'), '.unladen-server'),
@@ -28,6 +29,19 @@ DEFAULT_CONFIG = {
         'listen': '::'
     }
 }
+
+
+def dict_merge(s, m):
+    """Recursively merge one dict into another."""
+    if not isinstance(m, dict):
+        return m
+    out = copy.deepcopy(s)
+    for k, v in m.iteritems():
+        if k in out and isinstance(out[k], dict):
+            out[k] = dict_merge(out[k], v)
+        else:
+            out[k] = copy.deepcopy(v)
+    return out
 
 
 def get_config(config_dir='', config_cl={}):
@@ -41,9 +55,9 @@ def get_config(config_dir='', config_cl={}):
     json_file = os.path.join(config_dir, 'config.json')
     if os.path.isfile(json_file):
         with open(json_file, 'rb') as r:
-            config.update(json.load(r))
+            config = dict_merge(config, json.load(r))
 
     # Merge anything from the command line
-    config.update(config_cl)
+    config = dict_merge(config, config_cl)
 
     return config
