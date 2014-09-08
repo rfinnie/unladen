@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/env python
 
 # Unladen
 # Copyright (C) 2014 Ryan Finnie
@@ -37,7 +37,7 @@ import traceback
 class UnladenHTTP():
     def __init__(self, http):
         self.http = http
-        self.data_dir = os.path.join(os.path.expanduser("~"), '.unladen-server')
+        self.data_dir = self.http.server.config['data_dir']
         self.conn = sqlite3.connect(os.path.join(self.data_dir, 'catalog.sqlite'))
 
     def send_error(self, code, message=None):
@@ -416,8 +416,6 @@ class UnladenHTTP():
 
 
 class UnladenHTTPHandler(BaseHTTPServer.BaseHTTPRequestHandler):
-    debug = True
-
     server_version = 'Unladen/0.0.0.242.1'
     sys_version = ''
 
@@ -457,7 +455,7 @@ class UnladenHTTPHandler(BaseHTTPServer.BaseHTTPRequestHandler):
         for n in q:
             self.query[n.decode('utf-8')] = [y.decode('utf-8') for y in q[n]]
 
-        if self.debug:
+        if self.server.config['debug']:
             self.dump_req()
 
         r_fn = self.reqpath.strip('/').split('/')
@@ -494,6 +492,7 @@ class UnladenHTTPServer(SocketServer.ThreadingMixIn, BaseHTTPServer.HTTPServer):
     address_family = SocketServer.socket.AF_INET6
 
 
-def run():
-    httpd = UnladenHTTPServer(('::', 52777), UnladenHTTPHandler)
+def run(config):
+    httpd = UnladenHTTPServer((config['httpd']['listen'], config['httpd']['port']), UnladenHTTPHandler)
+    httpd.config = config
     httpd.serve_forever()

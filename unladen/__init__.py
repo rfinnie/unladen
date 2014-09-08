@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/env python
 
 # Unladen
 # Copyright (C) 2014 Ryan Finnie

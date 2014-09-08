@@ -17,36 +17,33 @@
 # with this program; if not, write to the Free Software Foundation, Inc.,
 # 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 
-import sys
-import unladen.config
-import unladen.httpd
+import json
 import os
-import getopt
+
+DEFAULT_CONFIG = {
+    'data_dir': os.path.join(os.path.expanduser('~'), '.unladen-server'),
+    'debug': False,
+    'httpd': {
+        'port': 52777,
+        'listen': '::'
+    }
+}
 
 
-def main():
-    try:
-        opts, args = getopt.getopt(sys.argv[1:], '', ['config-dir=', 'debug'])
-    except getopt.GetoptError as err:
-        print str(err)
-        sys.exit(1)
+def get_config(config_dir='', config_cl={}):
+    """Build a merged configuration."""
+    # Use the built-in default config
+    config = DEFAULT_CONFIG
 
-    config_dir = ''
-    config_cl = {}
-    for o, a in opts:
-        if o == '--config-dir':
-            config_dir = 'a'
-        elif o == '--debug':
-            config_cl['debug'] = True
-        else:
-            assert False, "unhandled option"
+    # If config.json is found, merge that
+    if not config_dir:
+        config_dir = os.path.join(os.path.expanduser('~'), '.unladen')
+    json_file = os.path.join(config_dir, 'config.json')
+    if os.path.isfile(json_file):
+        with open(json_file, 'r') as r:
+            config.update(json.load(r))
 
-    config = unladen.config.get_config(config_dir, config_cl)
+    # Merge anything from the command line
+    config.update(config_cl)
 
-    try:
-        unladen.httpd.run(config)
-    except KeyboardInterrupt:
-        sys.exit(0)
-
-if __name__ == '__main__':
-    main()
+    return config
