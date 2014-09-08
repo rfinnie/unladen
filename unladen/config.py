@@ -25,8 +25,11 @@ DEFAULT_CONFIG = {
     'data_dir': os.path.join(os.path.expanduser('~'), '.unladen-server'),
     'debug': False,
     'httpd': {
-        'port': 52777,
-        'listen': '::'
+        'listen': {
+            'ipv6': False,
+            'addr': '',
+            'port': 52777
+        }
     }
 }
 

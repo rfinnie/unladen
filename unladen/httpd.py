@@ -489,10 +489,15 @@ class UnladenHTTPHandler(BaseHTTPServer.BaseHTTPRequestHandler):
 
 
 class UnladenHTTPServer(SocketServer.ThreadingMixIn, BaseHTTPServer.HTTPServer):
-    address_family = SocketServer.socket.AF_INET6
+    def __init__(self, config, *args):
+        if config['httpd']['listen']['ipv6']:
+            self.address_family = SocketServer.socket.AF_INET6
+        else:
+            self.address_family = SocketServer.socket.AF_INET
+        self.config = config
+        BaseHTTPServer.HTTPServer.__init__(self, *args)
 
 
 def run(config):
-    httpd = UnladenHTTPServer((config['httpd']['listen'], config['httpd']['port']), UnladenHTTPHandler)
-    httpd.config = config
+    httpd = UnladenHTTPServer(config, (config['httpd']['listen']['addr'], config['httpd']['listen']['port']), UnladenHTTPHandler)
     httpd.serve_forever()
