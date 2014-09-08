@@ -40,7 +40,7 @@ def get_config(config_dir='', config_cl={}):
         config_dir = os.path.join(os.path.expanduser('~'), '.unladen')
     json_file = os.path.join(config_dir, 'config.json')
     if os.path.isfile(json_file):
-        with open(json_file, 'r') as r:
+        with open(json_file, 'rb') as r:
             config.update(json.load(r))
 
     # Merge anything from the command line

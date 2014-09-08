@@ -214,7 +214,7 @@ class UnladenHTTP():
             return
         block_size = Crypto.Cipher.AES.block_size
         cipher = None
-        with open(os.path.join(self.data_dir, 'content', fn_uuid[0:2], fn_uuid[2:4], fn_uuid), 'r') as r:
+        with open(os.path.join(self.data_dir, 'content', fn_uuid[0:2], fn_uuid[2:4], fn_uuid), 'rb') as r:
             if not cipher:
                 iv = r.read(block_size)
                 cipher = Crypto.Cipher.AES.new(randkey, Crypto.Cipher.AES.MODE_CBC, iv)
@@ -277,7 +277,7 @@ class UnladenHTTP():
         iv = os.urandom(block_size)
         cipher = Crypto.Cipher.AES.new(randkey, Crypto.Cipher.AES.MODE_CBC, iv)
         m = hashlib.md5()
-        with open(os.path.join(contentdir, fn_uuid), 'w') as w:
+        with open(os.path.join(contentdir, fn_uuid), 'wb') as w:
             w.write(iv)
             bytesread = 0
             toread = 1024
