@@ -32,6 +32,7 @@ import time
 import mimetypes
 import threading
 import traceback
+import httplib
 
 
 class UnladenHTTP():
@@ -95,7 +96,7 @@ class UnladenHTTP():
         if 'format' in self.http.query:
             if 'json' in self.http.query['format']:
                 use_json = True
-        self.http.send_response(200)
+        self.http.send_response(httplib.OK)
         if use_json:
             out = json.dumps(data).encode('utf-8')
             self.http.send_header('Content-Type', 'application/json; charset=utf-8')
@@ -116,7 +117,7 @@ class UnladenHTTP():
         c = self.conn.cursor()
         c.execute('SELECT COUNT(*), COUNT(DISTINCT container), SUM(bytes) FROM objects WHERE account = ?', (account_name,))
         (objects, containers, bytes) = c.fetchone()
-        self.http.send_response(204)
+        self.http.send_response(httplib.NO_CONTENT)
         self.http.send_header('X-Account-Container-Count', containers)
         self.http.send_header('X-Account-Bytes-Used', bytes)
         self.http.send_header('X-Account-Object-Count', objects)
@@ -128,9 +129,9 @@ class UnladenHTTP():
         c.execute('SELECT COUNT(*), SUM(bytes) FROM objects WHERE account = ? AND container = ?', (account_name, container_name))
         (objects, bytes) = c.fetchone()
         if objects == 0:
-            self.send_error(404)
+            self.send_error(httplib.NOT_FOUND)
             return
-        self.http.send_response(204)
+        self.http.send_response(httplib.NO_CONTENT)
         self.http.send_header('X-Container-Bytes-Used', bytes)
         self.http.send_header('X-Container-Object-Count', objects)
         self.http.end_headers()
@@ -171,7 +172,7 @@ class UnladenHTTP():
                 content_type = meta['content_type']
             out.append({'name': name, 'hash': hash, 'bytes': bytes, 'last_modified': last_modified, 'content_type': content_type})
         if len(out) == 0:
-            self.send_error(404)
+            self.send_error(httplib.NOT_FOUND)
             return
         self.output_file_list(out)
 
@@ -181,7 +182,7 @@ class UnladenHTTP():
         c.execute('SELECT uuid, crypt_key, bytes, hash, meta, last_modified, user_meta FROM objects WHERE account = ? AND container = ? AND name = ?', (account_name, container_name, object_name))
         res = c.fetchone()
         if not res:
-            self.send_error(404)
+            self.send_error(httplib.NOT_FOUND)
             return
         (fn_uuid, randkey, length, md5_hash, meta, last_modified, user_meta) = res
         if meta:
@@ -193,7 +194,7 @@ class UnladenHTTP():
         else:
             user_meta = {}
         randkey = randkey.decode('hex')
-        self.http.send_response(200)
+        self.http.send_response(httplib.OK)
         if 'content_type' in meta:
             self.http.send_header('Content-Type', meta['content_type'].encode('utf-8'))
         else:
@@ -232,14 +233,14 @@ class UnladenHTTP():
     def do_put_account(self, account_name):
         """Handle account-level PUT operations.
 
-        This operation intentionally returns 400 as PUT (creation) of
-        an account is not supported by the Swift API.
+        This operation intentionally returns BAD_REQUEST as PUT
+        (creation) of an account is not supported by the Swift API.
         """
-        self.send_error(400)
+        self.send_error(httplib.BAD_REQUEST)
 
     def do_put_container(self, account_name, container_name):
         """Handle container-level PUT operations."""
-        self.http.send_response(201)
+        self.http.send_response(httplib.CREATED)
         self.http.send_header('Content-Length', 0)
         self.http.end_headers()
 
@@ -248,7 +249,7 @@ class UnladenHTTP():
         fn_uuid = str(uuid.uuid4())
         randkey = os.urandom(32)
         if not 'content-length' in self.http.headers:
-            self.send_error(411)
+            self.send_error(httplib.LENGTH_REQUIRED)
             return
         length = int(self.http.headers['content-length'])
         last_modified = time.time()
@@ -298,7 +299,7 @@ class UnladenHTTP():
         md5_hash = m.hexdigest()
         if 'etag' in self.http.headers:
             if not self.http.headers['etag'].lower() == md5_hash:
-                self.send_error(409)
+                self.send_error(httplib.CONFLICT)
                 return
         c = self.conn.cursor()
         c.execute('SELECT uuid FROM objects WHERE account = ? AND container = ? AND name = ?', (account_name, container_name, object_name))
@@ -310,7 +311,7 @@ class UnladenHTTP():
             os.remove(os.path.join(self.data_dir, 'content', old_fn_uuid[0:2], old_fn_uuid[2:4], old_fn_uuid))
         c.execute('INSERT INTO objects (uuid, account, container, name, crypt_key, bytes, last_modified, meta, hash, user_meta) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', (fn_uuid, account_name, container_name, object_name, randkey.encode('hex'), length, last_modified, json.dumps(meta), md5_hash, json.dumps(user_meta)))
         self.conn.commit()
-        self.http.send_response(201)
+        self.http.send_response(httplib.CREATED)
         if 'content_type' in meta:
             self.http.send_header('Content-Type', meta['content_type'].encode('utf-8'))
         else:
@@ -326,13 +327,13 @@ class UnladenHTTP():
 
     def do_post_account(self, account_name):
         """Handle account-level POST operations."""
-        self.http.send_response(201)
+        self.http.send_response(httplib.CREATED)
         self.http.send_header('Content-Length', 0)
         self.http.end_headers()
 
     def do_post_container(self, account_name, container_name):
         """Handle container-level POST operations."""
-        self.http.send_response(201)
+        self.http.send_response(httplib.CREATED)
         self.http.send_header('Content-Length', 0)
         self.http.end_headers()
 
@@ -346,16 +347,16 @@ class UnladenHTTP():
         last_modified = time.time()
         c.execute('UPDATE objects SET user_meta = ?, last_modified = ? WHERE account = ? AND container = ? AND name = ?', (json.dumps(user_meta), last_modified, account_name, container_name, object_name))
         self.conn.commit()
-        self.http.send_response(204)
+        self.http.send_response(httplib.NO_CONTENT)
         self.http.end_headers()
 
     def do_delete_account(self, account_name):
         """Handle account-level DELETE operations.
 
-        This operation intentionally returns 400 as deletion of an
-        account is not supported by the Swift API.
+        This operation intentionally returns BAD_REQUEST as deletion
+        of an account is not supported by the Swift API.
         """
-        self.send_error(400)
+        self.send_error(httplib.BAD_REQUEST)
 
     def do_delete_container(self, account_name, container_name):
         """Handle container-level DELETE operations."""
@@ -363,9 +364,9 @@ class UnladenHTTP():
         c.execute('SELECT COUNT(*) FROM objects WHERE account = ? AND container = ?', (account_name, container_name))
         (objects,) = c.fetchone()
         if objects > 0:
-            self.send_error(409)
+            self.send_error(httplib.CONFLICT)
             return
-        self.http.send_response(204)
+        self.http.send_response(httplib.NO_CONTENT)
         self.http.end_headers()
 
     def do_delete_object(self, account_name, container_name, object_name):
@@ -374,23 +375,23 @@ class UnladenHTTP():
         c.execute('SELECT uuid FROM objects WHERE account = ? AND container = ? AND name = ?', (account_name, container_name, object_name))
         res = c.fetchone()
         if not res:
-            self.send_error(404)
+            self.send_error(httplib.NOT_FOUND)
             return
         (fn_uuid,) = res
         c.execute('DELETE FROM objects WHERE uuid = ?', (fn_uuid,))
         self.conn.commit()
         os.remove(os.path.join(self.data_dir, 'content', fn_uuid[0:2], fn_uuid[2:4], fn_uuid))
-        self.http.send_response(204)
+        self.http.send_response(httplib.NO_CONTENT)
         self.http.end_headers()
 
     def process_v1(self, r_fn):
         """Process Version 1 Swift commands."""
         if len(r_fn) == 0:
-            self.send_error(400)
+            self.send_error(httplib.BAD_REQUEST)
             return
         if 'format' in self.http.query:
             if not 'json' in self.http.query['format']:
-                self.send_error(501)
+                self.send_error(httplib.NOT_IMPLEMENTED)
                 return
         mode = self.http.command.lower()
         if len(r_fn) == 1:
@@ -405,13 +406,13 @@ class UnladenHTTP():
         try:
             call_func = getattr(self, 'do_%s_%s' % (mode, level))
         except AttributeError:
-            self.send_error(501)
+            self.send_error(httplib.NOT_IMPLEMENTED)
             return
         try:
             call_func(*args)
         except Exception, err:
             print traceback.format_exc()
-            self.send_error(500, err.message)
+            self.send_error(httplib.INTERNAL_SERVER_ERROR, err.message)
             return
 
 
@@ -444,7 +445,7 @@ class UnladenHTTPHandler(BaseHTTPServer.BaseHTTPRequestHandler):
                 self.unladen = UnladenHTTP(self)
             except Exception, err:
                 print traceback.format_exc()
-                self.send_error(500, err.message)
+                self.send_error(httplib.INTERNAL_SERVER_ERROR, err.message)
                 return
 
         self.url = urlparse.urlparse(self.path)
@@ -463,14 +464,14 @@ class UnladenHTTPHandler(BaseHTTPServer.BaseHTTPRequestHandler):
             self.unladen.process_v1(r_fn[1:])
         elif r_fn[0] == 'status':
             out = 'OK\n'
-            self.send_response(200)
+            self.send_response(httplib.OK)
             self.send_header('Content-Length', len(out))
             self.end_headers()
             self.wfile.write(out)
         elif r_fn[0] == '':
-            self.send_error(400)
+            self.send_error(httplib.BAD_REQUEST)
         else:
-            self.send_error(400)
+            self.send_error(httplib.BAD_REQUEST)
 
     def do_PUT(self):
         self.process_command()
