@@ -23,6 +23,7 @@ import urlparse
 import urllib
 import threading
 import httplib
+import traceback
 
 
 class UnladenHTTPHandler(BaseHTTPServer.BaseHTTPRequestHandler):
@@ -69,6 +70,7 @@ class UnladenHTTPHandler(BaseHTTPServer.BaseHTTPRequestHandler):
                     print traceback.format_exc()
                     self.send_error(httplib.INTERNAL_SERVER_ERROR, err.message)
                 self.handler_instances['handler_name'] = handler_instance
+            handler_claimed = False
             try:
                 handler_claimed = handler_instance.process_request(self.reqpath)
             except Exception, err:
