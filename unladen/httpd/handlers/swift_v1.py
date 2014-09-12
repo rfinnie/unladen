@@ -17,25 +17,19 @@
 # with this program; if not, write to the Free Software Foundation, Inc.,
 # 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 
-import sys
 import sqlite3
-import BaseHTTPServer
-import SocketServer
 import uuid
 import os
 import Crypto.Cipher.AES
-import urlparse
-import urllib
 import json
 import hashlib
 import time
 import mimetypes
-import threading
 import traceback
 import httplib
 
 
-class UnladenHTTP():
+class UnladenRequestHandler():
     def __init__(self, http):
         self.http = http
         self.data_dir = self.http.server.config['data_dir']
@@ -384,121 +378,38 @@ class UnladenHTTP():
         self.http.send_response(httplib.NO_CONTENT)
         self.http.end_headers()
 
-    def process_v1(self, r_fn):
+    def process_request(self, reqpath):
         """Process Version 1 Swift commands."""
-        if len(r_fn) == 0:
+        r_fn = reqpath.strip('/').split('/')
+        if not r_fn[0] == 'v1':
+            return False
+
+        if len(r_fn) == 1:
             self.send_error(httplib.BAD_REQUEST)
-            return
+            return True
         if 'format' in self.http.query:
             if not 'json' in self.http.query['format']:
                 self.send_error(httplib.NOT_IMPLEMENTED)
-                return
+                return True
         mode = self.http.command.lower()
-        if len(r_fn) == 1:
+        if len(r_fn) == 2:
             level = 'account'
-            args = [r_fn[0]]
-        elif len(r_fn) == 2:
+            args = [r_fn[1]]
+        elif len(r_fn) == 3:
             level = 'container'
-            args = [r_fn[0], r_fn[1]]
+            args = [r_fn[1], r_fn[2]]
         else:
             level = 'object'
-            args = [r_fn[0], r_fn[1], '/'.join(r_fn[2:])]
+            args = [r_fn[1], r_fn[2], '/'.join(r_fn[3:])]
         try:
             call_func = getattr(self, 'do_%s_%s' % (mode, level))
         except AttributeError:
             self.send_error(httplib.NOT_IMPLEMENTED)
-            return
+            return True
         try:
             call_func(*args)
+            return True
         except Exception, err:
             print traceback.format_exc()
             self.send_error(httplib.INTERNAL_SERVER_ERROR, err.message)
-            return
-
-
-class UnladenHTTPHandler(BaseHTTPServer.BaseHTTPRequestHandler):
-    server_version = 'Unladen/0.0.0.242.1'
-    sys_version = ''
-
-    # HTTP/1.1 requires very specific handling.  In general, every response
-    # either needs Content-Length or Connection: close.  Exceptions are
-    # codes 1xx, 204, and 304.
-    protocol_version = 'HTTP/1.1'
-
-    # Let BaseHTTPRequestHandler init on its own, so we have a full HTTP
-    # server stack available in case UnladenHTTP() fails.
-    unladen = None
-
-    def dump_req(self):
-        print '========================================'
-        print 'Thread: %s (%d total)' % (repr(threading.current_thread()), len(threading.enumerate()))
-        print 'Command: %s' % self.command
-        print 'URL: %s' % repr(self.url)
-        print 'Processed path: %s' % self.reqpath
-        print 'Query items: %s' % repr(self.query)
-        print 'Headers: %s' % repr(self.headers.dict)
-        print '========================================'
-
-    def process_command(self):
-        if not self.unladen:
-            try:
-                self.unladen = UnladenHTTP(self)
-            except Exception, err:
-                print traceback.format_exc()
-                self.send_error(httplib.INTERNAL_SERVER_ERROR, err.message)
-                return
-
-        self.url = urlparse.urlparse(self.path)
-        self.reqpath = urllib.unquote(self.url.path).decode('utf-8')
-        self.query = urlparse.parse_qs(self.url.query)
-        q = urlparse.parse_qs(self.url.query)
-        self.query = {}
-        for n in q:
-            self.query[n.decode('utf-8')] = [y.decode('utf-8') for y in q[n]]
-
-        if self.server.config['debug']:
-            self.dump_req()
-
-        r_fn = self.reqpath.strip('/').split('/')
-        if r_fn[0] == 'v1':
-            self.unladen.process_v1(r_fn[1:])
-        elif r_fn[0] == 'status':
-            out = 'OK\n'
-            self.send_response(httplib.OK)
-            self.send_header('Content-Length', len(out))
-            self.end_headers()
-            self.wfile.write(out)
-        elif r_fn[0] == '':
-            self.send_error(httplib.BAD_REQUEST)
-        else:
-            self.send_error(httplib.BAD_REQUEST)
-
-    def do_PUT(self):
-        self.process_command()
-
-    def do_DELETE(self):
-        self.process_command()
-
-    def do_POST(self):
-        self.process_command()
-
-    def do_HEAD(self):
-        self.process_command()
-
-    def do_GET(self):
-        self.process_command()
-
-
-class UnladenHTTPServer(SocketServer.ThreadingMixIn, BaseHTTPServer.HTTPServer):
-    def __init__(self, config, *args):
-        if config['httpd']['listen']['ipv6']:
-            self.address_family = SocketServer.socket.AF_INET6
-        else:
-            self.address_family = SocketServer.socket.AF_INET
-        self.config = config
-        BaseHTTPServer.HTTPServer.__init__(self, *args)
-
-
-def run(config):
-    httpd = UnladenHTTPServer(config, (config['httpd']['listen']['addr'], config['httpd']['listen']['port']), UnladenHTTPHandler)
-    httpd.serve_forever()
+            return True

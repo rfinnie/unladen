@@ -17,35 +17,22 @@
 # with this program; if not, write to the Free Software Foundation, Inc.,
 # 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 
-import sys
-import unladen.config
-import unladen.httpd
-import getopt
+import httplib
 
 
-def main():
-    try:
-        opts, args = getopt.getopt(sys.argv[1:], '', ['config-dir=', 'debug'])
-    except getopt.GetoptError as err:
-        print str(err)
-        sys.exit(1)
+class UnladenRequestHandler():
+    def __init__(self, http):
+        self.http = http
 
-    config_dir = ''
-    config_cl = {}
-    for o, a in opts:
-        if o == '--config-dir':
-            config_dir = 'a'
-        elif o == '--debug':
-            config_cl['debug'] = True
-        else:
-            assert False, "unhandled option"
+    def process_request(self, reqpath):
+        """Generic status reply."""
+        r_fn = reqpath.strip('/').split('/')
+        if not r_fn[0] == 'status':
+            return False
 
-    config = unladen.config.get_config(config_dir, config_cl)
-
-    try:
-        unladen.httpd.run(config)
-    except KeyboardInterrupt:
-        sys.exit(0)
-
-if __name__ == '__main__':
-    main()
+        out = 'OK\n'
+        self.http.send_response(httplib.OK)
+        self.http.send_header('Content-Length', len(out))
+        self.http.end_headers()
+        self.http.wfile.write(out)
+        return True

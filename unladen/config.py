@@ -25,6 +25,7 @@ DEFAULT_CONFIG = {
     'data_dir': os.path.join(os.path.expanduser('~'), '.unladen-server'),
     'debug': False,
     'httpd': {
+        'handlers': ['swift_v1', 'status'],
         'listen': {
             'ipv6': False,
             'addr': '',
