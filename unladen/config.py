@@ -25,12 +25,15 @@ DEFAULT_CONFIG = {
     'data_dir': os.path.join(os.path.expanduser('~'), '.unladen-server'),
     'debug': False,
     'httpd': {
-        'handlers': ['swift_v1', 'status'],
+        'handlers': ['auth_tempauth', 'swift_v1', 'status'],
         'listen': {
             'ipv6': False,
             'addr': '',
             'port': 52777
         }
+    },
+    'auth_tempauth': {
+        'storage_url': None
     }
 }
 
