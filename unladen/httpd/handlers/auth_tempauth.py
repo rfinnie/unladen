@@ -19,32 +19,52 @@
 
 import uuid
 import httplib
+import sqlite3
+import os
+import time
+import unladen.utils.passwords
 
 
 class UnladenRequestHandler():
     def __init__(self, http):
         self.http = http
+        self.data_dir = self.http.server.config['data_dir']
+        self.conn = sqlite3.connect(os.path.join(self.data_dir, 'catalog.sqlite'))
 
     def process_request(self, reqpath):
-        """Process Version 1.0 TempAuth commands.
-
-        For now this is a stub auth which, if configured, always
-        succeeds, give a random token, and sets the Unladen user
-        to the specified user.
-        """
+        """Process Version 1.0 TempAuth commands."""
         r_fn = reqpath.strip('/').split('/')
         if not r_fn[0] == 'v1.0':
             return False
         if not self.http.server.config['auth_tempauth']['storage_url']:
             return False
         if len(r_fn) > 1:
-            self.send_error(httplib.BAD_REQUEST)
+            self.http.send_error(httplib.BAD_REQUEST)
             return True
         if not 'x-auth-user' in self.http.headers:
-            self.send_error(httplib.BAD_REQUEST)
+            self.http.send_error(httplib.BAD_REQUEST)
             return True
+        c = self.conn.cursor()
+        username = self.http.headers['x-auth-user']
+        password = self.http.headers['x-auth-key']
+        c.execute('SELECT account, password FROM tempauth_users WHERE username = ?', (username,))
+        res = c.fetchone()
+        if not res:
+            self.http.send_error(httplib.UNAUTHORIZED)
+            return True
+        (account_name, password_crypt) = res
+        if not unladen.utils.passwords.check_password(password_crypt, password):
+            self.http.send_error(httplib.UNAUTHORIZED)
+            return True
+        token = str(uuid.uuid4())
+        expires = int(time.time() + 86400)
+        # Since this is a local provider, we cheat a bit and just add
+        # the token directly to tokens_cache.
+        c.execute('INSERT INTO tokens_cache (id, account, expires, source) VALUES (?, ?, ?, ?)', (token, account_name, expires, 'auth_tempauth'))
+        self.conn.commit()
         self.http.send_response(httplib.NO_CONTENT)
-        self.http.send_header('X-Storage-Url', '%s/%s' % (self.http.server.config['auth_tempauth']['storage_url'], self.http.headers['x-auth-user']))
-        self.http.send_header('X-Auth-Token', str(uuid.uuid4()))
+        storage_url = self.http.server.config['auth_tempauth']['storage_url']
+        self.http.send_header('X-Storage-Url', '%s/%s' % (storage_url, account_name))
+        self.http.send_header('X-Auth-Token', token)
         self.http.end_headers()
         return True

@@ -10,3 +10,16 @@ CREATE TABLE objects (
     meta text,
     user_meta text
 );
+
+CREATE TABLE tokens_cache (
+    id text,
+    account text,
+    expires int,
+    source text
+);
+
+CREATE TABLE tempauth_users (
+    account text,
+    username text,
+    password text
+);

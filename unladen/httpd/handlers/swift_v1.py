@@ -30,6 +30,8 @@ import httplib
 
 
 class UnladenRequestHandler():
+    authenticated_account = None
+
     def __init__(self, http):
         self.http = http
         self.data_dir = self.http.server.config['data_dir']
@@ -378,6 +380,15 @@ class UnladenRequestHandler():
         self.http.send_response(httplib.NO_CONTENT)
         self.http.end_headers()
 
+    def authenticate_token(self, user_token):
+        c = self.conn.cursor()
+        c.execute('SELECT account FROM tokens_cache WHERE id = ? AND expires > ?', (user_token, time.time()))
+        res = c.fetchone()
+        if not res:
+            return False
+        (token_account,) = res
+        return token_account
+
     def process_request(self, reqpath):
         """Process Version 1 Swift commands."""
         r_fn = reqpath.strip('/').split('/')
@@ -406,6 +417,13 @@ class UnladenRequestHandler():
         except AttributeError:
             self.send_error(httplib.NOT_IMPLEMENTED)
             return True
+        if 'x-auth-token' in self.http.headers:
+            ret = self.authenticate_token(self.http.headers['x-auth-token'])
+            if ret:
+                self.authenticated_account = ret
+            else:
+                self.send_error(httplib.UNAUTHORIZED)
+                return True
         try:
             call_func(*args)
             return True

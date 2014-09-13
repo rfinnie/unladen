@@ -36,6 +36,7 @@ Debian/Ubuntu system assumed -- adjust as necessary for your OS.
     $ sudo apt-get install python-crypto sqlite3
     $ mkdir -p ~/.unladen-server
     $ sqlite3 ~/.unladen-server/catalog.sqlite <schema.sqlite3.sql
+    $ sqlite3 ~/.unladen-server/catalog.sqlite <sample.sqlite3.sql
     $ python unladen_httpd
 
 
@@ -45,8 +46,7 @@ Client Usage
 Unladen currently supports most Swift API operations, and is decently supported by the swift command line client.
 
     $ sudo apt-get install python-swiftclient
-    $ UNLADEN_USER="$(uuidgen)"
-    $ U="swift --os-auth-token unused --os-storage-url http://localhost:52777/v1/${UNLADEN_USER}"
+    $ U="swift -A http://localhost:52777/v1.0 -U testuser -K testpass"
     $ $U upload test /etc/shells --object-name shells
     $ $U list
     test
