@@ -67,4 +67,16 @@ def get_config(config_dir='', config_cl={}):
     # Merge anything from the command line
     config = dict_merge(config, config_cl)
 
+    # Build dynamic configuration
+    if not config['auth_tempauth']['storage_url']:
+        addr = config['httpd']['listen']['addr']
+        if not addr:
+            if config['httpd']['listen']['ipv6']:
+                addr = '::1'
+            else:
+                addr = '127.0.0.1'
+        if config['httpd']['listen']['ipv6']:
+            addr = '[%s]' % addr
+        config['auth_tempauth']['storage_url'] = 'http://%s:%d/v1' % (addr, config['httpd']['listen']['port'])
+
     return config
