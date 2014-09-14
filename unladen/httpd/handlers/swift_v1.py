@@ -27,6 +27,7 @@ import time
 import mimetypes
 import traceback
 import httplib
+import random
 
 
 class UnladenRequestHandler():
@@ -108,6 +109,26 @@ class UnladenRequestHandler():
             self.http.end_headers()
             self.http.wfile.write(out)
 
+    def choose_store(self):
+        """Choose a random size-weighted store."""
+        weight_map = {}
+        for store in self.http.server.config['stores']:
+            weight_map[store] = self.http.server.config['stores'][store]['size']
+        return self.random_weighted(weight_map)
+
+    def random_weighted(self, m):
+        """Return a weighted random key."""
+        total = sum([v for v in m.itervalues()])
+        weighted = []
+        tp = 0
+        for (k, v) in m.iteritems():
+            tp = tp + (float(v) / total)
+            weighted.append((k, tp))
+        r = random.random()
+        for (k, v) in weighted:
+            if r < v:
+                return k
+
     def do_head_account(self, account_name):
         """Handle account-level HEAD operations."""
         c = self.conn.cursor()
@@ -175,12 +196,12 @@ class UnladenRequestHandler():
     def do_get_object(self, account_name, container_name, object_name):
         """Handle object-level GET operations."""
         c = self.conn.cursor()
-        c.execute('SELECT uuid, crypt_key, bytes, hash, meta, last_modified, user_meta FROM objects WHERE account = ? AND container = ? AND name = ?', (account_name, container_name, object_name))
+        c.execute('SELECT uuid, crypt_key, bytes, hash, meta, last_modified, user_meta, store FROM objects WHERE account = ? AND container = ? AND name = ?', (account_name, container_name, object_name))
         res = c.fetchone()
         if not res:
             self.send_error(httplib.NOT_FOUND)
             return
-        (fn_uuid, randkey, length, md5_hash, meta, last_modified, user_meta) = res
+        (fn_uuid, randkey, length, md5_hash, meta, last_modified, user_meta, store) = res
         if meta:
             meta = json.loads(meta)
         else:
@@ -190,6 +211,7 @@ class UnladenRequestHandler():
         else:
             user_meta = {}
         randkey = randkey.decode('hex')
+        store_dir = self.http.server.config['stores'][store]['directory']
         self.http.send_response(httplib.OK)
         if 'content_type' in meta:
             self.http.send_header('Content-Type', meta['content_type'].encode('utf-8'))
@@ -211,7 +233,7 @@ class UnladenRequestHandler():
             return
         block_size = Crypto.Cipher.AES.block_size
         cipher = None
-        with open(os.path.join(self.data_dir, 'content', fn_uuid[0:2], fn_uuid[2:4], fn_uuid), 'rb') as r:
+        with open(os.path.join(store_dir, fn_uuid[0:2], fn_uuid[2:4], fn_uuid), 'rb') as r:
             if not cipher:
                 iv = r.read(block_size)
                 cipher = Crypto.Cipher.AES.new(randkey, Crypto.Cipher.AES.MODE_CBC, iv)
@@ -267,7 +289,9 @@ class UnladenRequestHandler():
         for header in self.http.headers:
             if header.lower().startswith('x-object-meta-'):
                 user_meta[header[14:]] = self.http.headers[header]
-        contentdir = os.path.join(self.data_dir, 'content', fn_uuid[0:2], fn_uuid[2:4])
+        store = self.choose_store()
+        store_dir = self.http.server.config['stores'][store]['directory']
+        contentdir = os.path.join(store_dir, fn_uuid[0:2], fn_uuid[2:4])
         if not os.path.isdir(contentdir):
             os.makedirs(contentdir)
         block_size = Crypto.Cipher.AES.block_size
@@ -298,14 +322,15 @@ class UnladenRequestHandler():
                 self.send_error(httplib.CONFLICT)
                 return
         c = self.conn.cursor()
-        c.execute('SELECT uuid FROM objects WHERE account = ? AND container = ? AND name = ?', (account_name, container_name, object_name))
+        c.execute('SELECT uuid, store FROM objects WHERE account = ? AND container = ? AND name = ?', (account_name, container_name, object_name))
         res = c.fetchone()
         if res:
-            (old_fn_uuid,) = res
+            (old_fn_uuid, old_store) = res
+            old_store_dir = self.http.server.config['stores'][old_store]['directory']
             c.execute('DELETE FROM objects WHERE uuid = ?', (old_fn_uuid,))
+            os.remove(os.path.join(old_store_dir, old_fn_uuid[0:2], old_fn_uuid[2:4], old_fn_uuid))
             self.conn.commit()
-            os.remove(os.path.join(self.data_dir, 'content', old_fn_uuid[0:2], old_fn_uuid[2:4], old_fn_uuid))
-        c.execute('INSERT INTO objects (uuid, account, container, name, crypt_key, bytes, last_modified, meta, hash, user_meta) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', (fn_uuid, account_name, container_name, object_name, randkey.encode('hex'), length, last_modified, json.dumps(meta), md5_hash, json.dumps(user_meta)))
+        c.execute('INSERT INTO objects (uuid, account, container, name, store, crypt_key, bytes, last_modified, meta, hash, user_meta) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', (fn_uuid, account_name, container_name, object_name, store, randkey.encode('hex'), length, last_modified, json.dumps(meta), md5_hash, json.dumps(user_meta)))
         self.conn.commit()
         self.http.send_response(httplib.CREATED)
         if 'content_type' in meta:
@@ -368,15 +393,16 @@ class UnladenRequestHandler():
     def do_delete_object(self, account_name, container_name, object_name):
         """Handle object-level DELETE operations."""
         c = self.conn.cursor()
-        c.execute('SELECT uuid FROM objects WHERE account = ? AND container = ? AND name = ?', (account_name, container_name, object_name))
+        c.execute('SELECT uuid, store FROM objects WHERE account = ? AND container = ? AND name = ?', (account_name, container_name, object_name))
         res = c.fetchone()
         if not res:
             self.send_error(httplib.NOT_FOUND)
             return
-        (fn_uuid,) = res
+        (fn_uuid, store) = res
+        store_dir = self.http.server.config['stores'][store]['directory']
         c.execute('DELETE FROM objects WHERE uuid = ?', (fn_uuid,))
+        os.remove(os.path.join(store_dir, fn_uuid[0:2], fn_uuid[2:4], fn_uuid))
         self.conn.commit()
-        os.remove(os.path.join(self.data_dir, 'content', fn_uuid[0:2], fn_uuid[2:4], fn_uuid))
         self.http.send_response(httplib.NO_CONTENT)
         self.http.end_headers()
 

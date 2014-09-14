@@ -5,6 +5,7 @@ CREATE TABLE objects (
     name text,
     crypt_key text,
     bytes int,
+    store text,
     last_modified int,
     hash text,
     meta text,

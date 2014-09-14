@@ -24,6 +24,11 @@ import copy
 DEFAULT_CONFIG = {
     'data_dir': os.path.join(os.path.expanduser('~'), '.unladen-server'),
     'debug': False,
+    'stores': {
+        'default': {
+            'directory': os.path.join(os.path.expanduser('~'), '.unladen-server', 'stores', 'default')
+        }
+    },
     'httpd': {
         'handlers': ['auth_tempauth', 'swift_v1', 'status'],
         'listen': {
@@ -67,7 +72,7 @@ def get_config(config_dir='', config_cl={}):
     # Merge anything from the command line
     config = dict_merge(config, config_cl)
 
-    # Build dynamic configuration
+    # Build default storage_url if not specified
     if not config['auth_tempauth']['storage_url']:
         addr = config['httpd']['listen']['addr']
         if not addr:
@@ -78,5 +83,12 @@ def get_config(config_dir='', config_cl={}):
         if config['httpd']['listen']['ipv6']:
             addr = '[%s]' % addr
         config['auth_tempauth']['storage_url'] = 'http://%s:%d/v1' % (addr, config['httpd']['listen']['port'])
+
+    # Check stores configuration for completeness
+    for store in config['stores']:
+        if not 'directory' in config['stores'][store]:
+            raise Exception('"directory" not specified for store "%s"' % store)
+        if not 'size' in config['stores'][store]:
+            config['stores'][store]['size'] = 10000000
 
     return config
