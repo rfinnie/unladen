@@ -26,7 +26,8 @@ DEFAULT_CONFIG = {
     'debug': False,
     'stores': {
         'default': {
-            'directory': os.path.join(os.path.expanduser('~'), '.unladen-server', 'stores', 'default')
+            'directory': os.path.join(os.path.expanduser('~'), '.unladen-server', 'stores', 'default'),
+            'only_store': True
         }
     },
     'httpd': {
@@ -85,10 +86,13 @@ def get_config(config_dir='', config_cl={}):
         config['auth_tempauth']['storage_url'] = 'http://%s:%d/v1' % (addr, config['httpd']['listen']['port'])
 
     # Check stores configuration for completeness
+    if len(config['stores'].keys()) > 1 and 'default' in config['stores']:
+        if 'only_store' in config['stores']['default'] and config['stores']['default']['only_store']:
+            del(config['stores']['default'])
     for store in config['stores']:
         if not 'directory' in config['stores'][store]:
             raise Exception('"directory" not specified for store "%s"' % store)
         if not 'size' in config['stores'][store]:
-            config['stores'][store]['size'] = 10000000
+            config['stores'][store]['size'] = 10000000000
 
     return config
