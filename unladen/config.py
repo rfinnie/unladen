@@ -24,12 +24,7 @@ import copy
 DEFAULT_CONFIG = {
     'data_dir': os.path.join(os.path.expanduser('~'), '.unladen-server'),
     'debug': False,
-    'stores': {
-        'default': {
-            'directory': os.path.join(os.path.expanduser('~'), '.unladen-server', 'stores', 'default'),
-            'only_store': True
-        }
-    },
+    'stores': {},
     'httpd': {
         'handlers': ['auth_tempauth', 'swift_v1', 'status'],
         'listen': {
@@ -87,9 +82,12 @@ def get_config(config_dir='', config_cl={}):
         config['auth_tempauth']['storage_url'] = 'http://%s:%d/v1' % (addr, config['httpd']['listen']['port'])
 
     # Check stores configuration for completeness
-    if len(config['stores'].keys()) > 1 and 'default' in config['stores']:
-        if 'only_store' in config['stores']['default'] and config['stores']['default']['only_store']:
-            del(config['stores']['default'])
+    if not config['stores']:
+        config['stores'] = {
+            'default': {
+                'directory': os.path.join(os.path.expanduser('~'), '.unladen-server', 'stores', 'default')
+            }
+        }
     for store in config['stores']:
         if not 'directory' in config['stores'][store]:
             raise Exception('"directory" not specified for store "%s"' % store)
