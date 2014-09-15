@@ -47,6 +47,17 @@ class UnladenHTTPHandler(BaseHTTPServer.BaseHTTPRequestHandler):
         print 'Headers: %s' % repr(self.headers.dict)
         print '========================================'
 
+    def log_request(self, code='-', size='-'):
+        """Log an accepted request."""
+        referer = '-'
+        ua = '-'
+        if 'referer' in self.headers:
+            referer = self.headers['referer']
+        if 'user-agent' in self.headers:
+            referer = self.headers['user-agent']
+
+        self.log_message('"%s" %s %s "%s" "%s"', self.requestline, str(code), str(size), str(referer), str(ua))
+
     def process_command(self):
         self.url = urlparse.urlparse(self.path)
         self.reqpath = urllib.unquote(self.url.path).decode('utf-8')
