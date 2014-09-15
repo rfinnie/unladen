@@ -6,7 +6,7 @@ setup(name='unladen',
       author='Ryan Finnie',
       author_email='ryan@finnie.org',
       url='https://github.com/rfinnie/unladen',
-      packages=['unladen'],
+      packages=['unladen', 'unladen.httpd', 'unladen.httpd.handlers', 'unladen.utils'],
       scripts=['unladen_httpd']
      )
 

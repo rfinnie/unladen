@@ -34,9 +34,9 @@ Server Usage
 Debian/Ubuntu system assumed -- adjust as necessary for your OS.
 
     $ sudo apt-get install python-crypto sqlite3
-    $ mkdir -p ~/.unladen-server
-    $ sqlite3 ~/.unladen-server/catalog.sqlite <schema.sqlite3.sql
-    $ sqlite3 ~/.unladen-server/catalog.sqlite <sample.sqlite3.sql
+    $ mkdir -p ~/.unladen/var
+    $ sqlite3 ~/.unladen/var/catalog.sqlite <schema.sqlite3.sql
+    $ sqlite3 ~/.unladen/var/catalog.sqlite <sample.sqlite3.sql
     $ python unladen_httpd
 
 

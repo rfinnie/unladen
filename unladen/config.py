@@ -21,8 +21,18 @@ import json
 import os
 import copy
 
+if __file__.startswith('/usr/lib'):
+    DEFAULT_CONFIG_DIR = '/etc/unladen'
+    DEFAULT_DATA_DIR = '/var/lib/unladen'
+elif __file__.startswith('/usr/local/lib'):
+    DEFAULT_CONFIG_DIR = '/usr/local/etc'
+    DEFAULT_DATA_DIR = '/usr/local/lib/unladen'
+else:
+    DEFAULT_CONFIG_DIR = os.path.join(os.path.expanduser('~'), '.unladen', 'etc')
+    DEFAULT_DATA_DIR = os.path.join(os.path.expanduser('~'), '.unladen', 'var')
+
 DEFAULT_CONFIG = {
-    'data_dir': os.path.join(os.path.expanduser('~'), '.unladen-server'),
+    'data_dir': DEFAULT_DATA_DIR,
     'debug': False,
     'stores': {},
     'httpd': {
@@ -60,7 +70,7 @@ def get_config(config_dir='', config_cl={}):
 
     # If config.json is found, merge that
     if not config_dir:
-        config_dir = os.path.join(os.path.expanduser('~'), '.unladen')
+        config_dir = DEFAULT_CONFIG_DIR
     json_file = os.path.join(config_dir, 'config.json')
     if os.path.isfile(json_file):
         with open(json_file, 'rb') as r:
@@ -85,7 +95,7 @@ def get_config(config_dir='', config_cl={}):
     if not config['stores']:
         config['stores'] = {
             'default': {
-                'directory': os.path.join(os.path.expanduser('~'), '.unladen-server', 'stores', 'default')
+                'directory': os.path.join(config['data_dir'], 'stores', 'default')
             }
         }
     for store in config['stores']:
