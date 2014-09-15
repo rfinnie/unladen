@@ -58,6 +58,22 @@ class UnladenHTTPHandler(BaseHTTPServer.BaseHTTPRequestHandler):
 
         self.log_message('"%s" %s %s "%s" "%s"', self.requestline, str(code), str(size), str(referer), str(ua))
 
+    def process_xff(self):
+        if not 'x-forwarded-for' in self.headers:
+            return
+        remote_addr = self.client_address[0]
+        if not remote_addr in self.server.config['httpd']['xff_allowed_sources']:
+            return
+        xff_list = self.headers['x-forwarded-for'].split(', ')
+        xff_list.reverse()
+        for ip in xff_list:
+            if not ip:
+                continue
+            if ip in self.server.config['httpd']['xff_allowed_sources']:
+                continue
+            self.client_address = (ip, self.client_address[1])
+            break
+
     def process_command(self):
         self.url = urlparse.urlparse(self.path)
         self.reqpath = urllib.unquote(self.url.path).decode('utf-8')
@@ -66,6 +82,8 @@ class UnladenHTTPHandler(BaseHTTPServer.BaseHTTPRequestHandler):
         self.query = {}
         for n in q:
             self.query[n.decode('utf-8')] = [y.decode('utf-8') for y in q[n]]
+
+        self.process_xff()
 
         if self.server.config['debug']:
             self.dump_req()

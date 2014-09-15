@@ -36,7 +36,8 @@ DEFAULT_CONFIG = {
             'ipv6': False,
             'addr': '',
             'port': 52777
-        }
+        },
+        'xff_allowed_sources': []
     },
     'auth_tempauth': {
         'storage_url': None
