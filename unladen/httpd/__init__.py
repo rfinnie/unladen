@@ -62,14 +62,14 @@ class UnladenHTTPHandler(BaseHTTPServer.BaseHTTPRequestHandler):
         if not 'x-forwarded-for' in self.headers:
             return
         remote_addr = self.client_address[0]
-        if not remote_addr in self.server.config['httpd']['xff_allowed_sources']:
+        if not remote_addr in self.server.config['httpd']['xff_trusted_relays']:
             return
         xff_list = self.headers['x-forwarded-for'].split(', ')
         xff_list.reverse()
         for ip in xff_list:
             if not ip:
                 continue
-            if ip in self.server.config['httpd']['xff_allowed_sources']:
+            if ip in self.server.config['httpd']['xff_trusted_relays']:
                 continue
             self.client_address = (ip, self.client_address[1])
             break

@@ -42,7 +42,7 @@ DEFAULT_CONFIG = {
             'addr': '',
             'port': 52777
         },
-        'xff_allowed_sources': []
+        'xff_trusted_relays': []
     },
     'auth_tempauth': {
         'storage_url': None
