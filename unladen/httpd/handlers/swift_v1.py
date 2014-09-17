@@ -196,12 +196,12 @@ class UnladenRequestHandler():
     def do_get_object(self, account_name, container_name, object_name):
         """Handle object-level GET operations."""
         c = self.conn.cursor()
-        c.execute('SELECT uuid, crypt_key, bytes, hash, meta, last_modified, user_meta, store FROM objects WHERE account = ? AND container = ? AND name = ?', (account_name, container_name, object_name))
+        c.execute('SELECT uuid, bytes, hash, meta, last_modified, user_meta, store FROM objects WHERE account = ? AND container = ? AND name = ?', (account_name, container_name, object_name))
         res = c.fetchone()
         if not res:
             self.send_error(httplib.NOT_FOUND)
             return
-        (fn_uuid, aes_key, length, md5_hash, meta, last_modified, user_meta, store) = res
+        (fn_uuid, length, md5_hash, meta, last_modified, user_meta, store) = res
         if meta:
             meta = json.loads(meta)
         else:
@@ -210,7 +210,7 @@ class UnladenRequestHandler():
             user_meta = json.loads(user_meta)
         else:
             user_meta = {}
-        aes_key = aes_key.decode('hex')
+        aes_key = meta['aes_key'].decode('hex')
         store_dir = self.http.server.config['stores'][store]['directory']
         self.http.send_response(httplib.OK)
         if 'content_type' in meta:
@@ -289,6 +289,7 @@ class UnladenRequestHandler():
         else:
             aes_key = os.urandom(32)
         meta = {}
+        meta['aes_key'] = aes_key.encode('hex')
         if 'x-detect-content-type' in self.http.headers and self.http.headers['x-detect-content-type'] == 'true':
             (content_type_guess, content_encoding_guess) = mimetypes.guess_type(object_name)
             if content_type_guess:
@@ -347,7 +348,7 @@ class UnladenRequestHandler():
             c.execute('DELETE FROM objects WHERE uuid = ?', (old_fn_uuid,))
             os.remove(os.path.join(old_store_dir, old_fn_uuid[0:2], old_fn_uuid[2:4], old_fn_uuid))
             self.conn.commit()
-        c.execute('INSERT INTO objects (uuid, account, container, name, store, crypt_key, bytes, last_modified, meta, hash, user_meta) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', (fn_uuid, account_name, container_name, object_name, store, aes_key.encode('hex'), length, last_modified, json.dumps(meta), md5_hash, json.dumps(user_meta)))
+        c.execute('INSERT INTO objects (uuid, account, container, name, store, bytes, last_modified, meta, hash, user_meta) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', (fn_uuid, account_name, container_name, object_name, store, length, last_modified, json.dumps(meta), md5_hash, json.dumps(user_meta)))
         self.conn.commit()
         self.http.send_response(httplib.CREATED)
         if 'content_type' in meta:

@@ -3,7 +3,6 @@ CREATE TABLE objects (
     account text,
     container text,
     name text,
-    crypt_key text,
     bytes int,
     store text,
     last_modified int,
