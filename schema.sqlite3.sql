@@ -6,6 +6,7 @@ CREATE TABLE objects (
     bytes int,
     store text,
     last_modified int,
+    expires int,
     hash text,
     meta text,
     user_meta text

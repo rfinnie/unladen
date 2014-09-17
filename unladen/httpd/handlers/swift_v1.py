@@ -177,9 +177,11 @@ class UnladenRequestHandler():
             self.output_file_list([])
             return
         c = self.conn.cursor()
-        c.execute('SELECT name, hash, bytes, last_modified, meta FROM objects WHERE account = ? AND container = ?', (account_name, container_name))
+        c.execute('SELECT name, hash, bytes, last_modified, expires, meta FROM objects WHERE account = ? AND container = ?', (account_name, container_name))
         out = []
-        for (name, hash, bytes, last_modified, meta) in c.fetchall():
+        for (name, hash, bytes, last_modified, expires, meta) in c.fetchall():
+            if expires and expires <= time.time():
+                continue
             if meta:
                 meta = json.loads(meta)
             else:
@@ -196,12 +198,15 @@ class UnladenRequestHandler():
     def do_get_object(self, account_name, container_name, object_name):
         """Handle object-level GET operations."""
         c = self.conn.cursor()
-        c.execute('SELECT uuid, bytes, hash, meta, last_modified, user_meta, store FROM objects WHERE account = ? AND container = ? AND name = ?', (account_name, container_name, object_name))
+        c.execute('SELECT uuid, bytes, hash, meta, last_modified, expires, user_meta, store FROM objects WHERE account = ? AND container = ? AND name = ?', (account_name, container_name, object_name))
         res = c.fetchone()
         if not res:
             self.send_error(httplib.NOT_FOUND)
             return
-        (fn_uuid, length, md5_hash, meta, last_modified, user_meta, store) = res
+        (fn_uuid, length, md5_hash, meta, last_modified, expires, user_meta, store) = res
+        if expires and expires <= time.time():
+            self.send_error(httplib.NOT_FOUND)
+            return
         if meta:
             meta = json.loads(meta)
         else:
@@ -224,6 +229,8 @@ class UnladenRequestHandler():
         self.http.send_header('Content-Length', length)
         self.http.send_header('Last-Modified', self.http.date_time_string(last_modified))
         self.http.send_header('X-Timestamp', last_modified)
+        if expires:
+            self.http.send_header('X-Delete-At', expires)
         self.http.send_header('X-Unladen-Uuid', fn_uuid)
         self.http.send_header('ETag', md5_hash)
         for header in user_meta:
@@ -303,6 +310,11 @@ class UnladenRequestHandler():
                 meta['content_encoding'] = self.http.headers['content-encoding']
         if 'content-disposition' in self.http.headers:
             meta['content_disposition'] = self.http.headers['content-disposition']
+        expires = None
+        if 'x-delete-at' in self.http.headers:
+            expires = int(self.http.headers['x-delete-at'])
+        elif 'x-delete-after' in self.http.headers:
+            expires = last_modified + int(self.http.headers['x-delete-after'])
         user_meta = {}
         for header in self.http.headers:
             if header.lower().startswith('x-object-meta-'):
@@ -348,7 +360,7 @@ class UnladenRequestHandler():
             c.execute('DELETE FROM objects WHERE uuid = ?', (old_fn_uuid,))
             os.remove(os.path.join(old_store_dir, old_fn_uuid[0:2], old_fn_uuid[2:4], old_fn_uuid))
             self.conn.commit()
-        c.execute('INSERT INTO objects (uuid, account, container, name, store, bytes, last_modified, meta, hash, user_meta) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', (fn_uuid, account_name, container_name, object_name, store, length, last_modified, json.dumps(meta), md5_hash, json.dumps(user_meta)))
+        c.execute('INSERT INTO objects (uuid, account, container, name, store, bytes, last_modified, expires, meta, hash, user_meta) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', (fn_uuid, account_name, container_name, object_name, store, length, last_modified, expires, json.dumps(meta), md5_hash, json.dumps(user_meta)))
         self.conn.commit()
         self.http.send_response(httplib.CREATED)
         if 'content_type' in meta:
@@ -379,12 +391,21 @@ class UnladenRequestHandler():
     def do_post_object(self, account_name, container_name, object_name):
         """Handle object-level POST operations."""
         c = self.conn.cursor()
+        c.execute('SELECT uuid, expires FROM objects WHERE account = ? AND container = ? AND name = ?', (account_name, container_name, object_name))
+        res = c.fetchone()
+        if not res:
+            self.send_error(httplib.NOT_FOUND)
+            return
+        (fn_uuid, expires) = res
+        if expires and expires <= time.time():
+            self.send_error(httplib.NOT_FOUND)
+            return
         user_meta = {}
         for header in self.http.headers:
             if header.lower().startswith('x-object-meta-'):
                 user_meta[header[14:]] = self.http.headers[header]
         last_modified = time.time()
-        c.execute('UPDATE objects SET user_meta = ?, last_modified = ? WHERE account = ? AND container = ? AND name = ?', (json.dumps(user_meta), last_modified, account_name, container_name, object_name))
+        c.execute('UPDATE objects SET user_meta = ?, last_modified = ? WHERE uuid = ?', (json.dumps(user_meta), last_modified, fn_uuid))
         self.conn.commit()
         self.http.send_response(httplib.NO_CONTENT)
         self.http.end_headers()
