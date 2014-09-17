@@ -201,7 +201,7 @@ class UnladenRequestHandler():
         if not res:
             self.send_error(httplib.NOT_FOUND)
             return
-        (fn_uuid, randkey, length, md5_hash, meta, last_modified, user_meta, store) = res
+        (fn_uuid, aes_key, length, md5_hash, meta, last_modified, user_meta, store) = res
         if meta:
             meta = json.loads(meta)
         else:
@@ -210,7 +210,7 @@ class UnladenRequestHandler():
             user_meta = json.loads(user_meta)
         else:
             user_meta = {}
-        randkey = randkey.decode('hex')
+        aes_key = aes_key.decode('hex')
         store_dir = self.http.server.config['stores'][store]['directory']
         self.http.send_response(httplib.OK)
         if 'content_type' in meta:
@@ -236,7 +236,7 @@ class UnladenRequestHandler():
         with open(os.path.join(store_dir, fn_uuid[0:2], fn_uuid[2:4], fn_uuid), 'rb') as r:
             if not cipher:
                 iv = r.read(block_size)
-                cipher = Crypto.Cipher.AES.new(randkey, Crypto.Cipher.AES.MODE_CBC, iv)
+                cipher = Crypto.Cipher.AES.new(aes_key, Crypto.Cipher.AES.MODE_CBC, iv)
             bytesread = 0
             blk = r.read(1024)
             bytesread = bytesread + len(blk)
@@ -264,13 +264,30 @@ class UnladenRequestHandler():
 
     def do_put_object(self, account_name, container_name, object_name):
         """Handle object-level PUT operations."""
-        fn_uuid = str(uuid.uuid4())
-        randkey = os.urandom(32)
         if not 'content-length' in self.http.headers:
             self.send_error(httplib.LENGTH_REQUIRED)
             return
         length = int(self.http.headers['content-length'])
         last_modified = time.time()
+        if 'x-unladen-uuid' in self.http.headers:
+            try:
+                fn_uuid = str(uuid.UUID(self.http.headers['x-unladen-uuid']))
+            except ValueError:
+                self.send_error(httplib.BAD_REQUEST)
+                return
+        else:
+            fn_uuid = str(uuid.uuid4())
+        if 'x-unladen-aes-key' in self.http.headers:
+            try:
+                aes_key = self.http.headers['x-unladen-aes-key'].decode('hex')
+            except TypeError:
+                self.send_error(httplib.BAD_REQUEST)
+                return
+            if not len(aes_key) == 32:
+                self.send_error(httplib.BAD_REQUEST)
+                return
+        else:
+            aes_key = os.urandom(32)
         meta = {}
         if 'x-detect-content-type' in self.http.headers and self.http.headers['x-detect-content-type'] == 'true':
             (content_type_guess, content_encoding_guess) = mimetypes.guess_type(object_name)
@@ -296,7 +313,7 @@ class UnladenRequestHandler():
             os.makedirs(contentdir)
         block_size = Crypto.Cipher.AES.block_size
         iv = os.urandom(block_size)
-        cipher = Crypto.Cipher.AES.new(randkey, Crypto.Cipher.AES.MODE_CBC, iv)
+        cipher = Crypto.Cipher.AES.new(aes_key, Crypto.Cipher.AES.MODE_CBC, iv)
         m = hashlib.md5()
         with open(os.path.join(contentdir, fn_uuid), 'wb') as w:
             w.write(iv)
@@ -330,7 +347,7 @@ class UnladenRequestHandler():
             c.execute('DELETE FROM objects WHERE uuid = ?', (old_fn_uuid,))
             os.remove(os.path.join(old_store_dir, old_fn_uuid[0:2], old_fn_uuid[2:4], old_fn_uuid))
             self.conn.commit()
-        c.execute('INSERT INTO objects (uuid, account, container, name, store, crypt_key, bytes, last_modified, meta, hash, user_meta) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', (fn_uuid, account_name, container_name, object_name, store, randkey.encode('hex'), length, last_modified, json.dumps(meta), md5_hash, json.dumps(user_meta)))
+        c.execute('INSERT INTO objects (uuid, account, container, name, store, crypt_key, bytes, last_modified, meta, hash, user_meta) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', (fn_uuid, account_name, container_name, object_name, store, aes_key.encode('hex'), length, last_modified, json.dumps(meta), md5_hash, json.dumps(user_meta)))
         self.conn.commit()
         self.http.send_response(httplib.CREATED)
         if 'content_type' in meta:
