@@ -24,6 +24,7 @@ import urllib
 import threading
 import httplib
 import traceback
+import ssl
 
 
 class UnladenHTTPHandler(BaseHTTPServer.BaseHTTPRequestHandler):
@@ -136,6 +137,8 @@ class UnladenHTTPServer(SocketServer.ThreadingMixIn, BaseHTTPServer.HTTPServer):
             self.address_family = SocketServer.socket.AF_INET
         self.config = config
         BaseHTTPServer.HTTPServer.__init__(self, *args)
+        if config['httpd']['listen']['ssl']:
+            self.socket = ssl.wrap_socket(self.socket, keyfile=config['httpd']['listen']['ssl_key'], certfile=config['httpd']['listen']['ssl_cert'], server_side=True)
 
 
 def run(config):

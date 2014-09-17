@@ -40,7 +40,10 @@ DEFAULT_CONFIG = {
         'listen': {
             'ipv6': False,
             'addr': '',
-            'port': 52777
+            'port': 52777,
+            'ssl': False,
+            'ssl_key': None,
+            'ssl_cert': None
         },
         'xff_trusted_relays': []
     },
