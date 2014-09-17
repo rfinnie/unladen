@@ -98,6 +98,7 @@ class UnladenHTTPHandler(BaseHTTPServer.BaseHTTPRequestHandler):
                 except Exception, err:
                     print traceback.format_exc()
                     self.send_error(httplib.INTERNAL_SERVER_ERROR, err.message)
+                    return
                 self.handler_instances['handler_name'] = handler_instance
             handler_claimed = False
             try:
@@ -105,6 +106,7 @@ class UnladenHTTPHandler(BaseHTTPServer.BaseHTTPRequestHandler):
             except Exception, err:
                 print traceback.format_exc()
                 self.send_error(httplib.INTERNAL_SERVER_ERROR, err.message)
+                return
             if handler_claimed:
                 return
 
