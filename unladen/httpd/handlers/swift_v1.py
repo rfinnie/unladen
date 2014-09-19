@@ -177,9 +177,9 @@ class UnladenRequestHandler():
             self.output_file_list([])
             return
         c = self.conn.cursor()
-        c.execute('SELECT name, hash, bytes, last_modified, expires, meta FROM objects WHERE account = ? AND container = ?', (account_name, container_name))
+        c.execute('SELECT name, bytes, last_modified, expires, meta FROM objects WHERE account = ? AND container = ?', (account_name, container_name))
         out = []
-        for (name, hash, bytes, last_modified, expires, meta) in c.fetchall():
+        for (name, bytes, last_modified, expires, meta) in c.fetchall():
             if expires and expires <= time.time():
                 continue
             if meta:
@@ -189,7 +189,7 @@ class UnladenRequestHandler():
             content_type = 'application/octet-stream'
             if 'content_type' in meta:
                 content_type = meta['content_type']
-            out.append({'name': name, 'hash': hash, 'bytes': bytes, 'last_modified': last_modified, 'content_type': content_type})
+            out.append({'name': name, 'hash': meta['hash'], 'bytes': bytes, 'last_modified': last_modified, 'content_type': content_type})
         if len(out) == 0:
             self.send_error(httplib.NOT_FOUND)
             return
@@ -198,12 +198,12 @@ class UnladenRequestHandler():
     def do_get_object(self, account_name, container_name, object_name):
         """Handle object-level GET operations."""
         c = self.conn.cursor()
-        c.execute('SELECT uuid, bytes, hash, meta, last_modified, expires, user_meta, store FROM objects WHERE account = ? AND container = ? AND name = ?', (account_name, container_name, object_name))
+        c.execute('SELECT uuid, bytes, meta, last_modified, expires, user_meta FROM objects WHERE account = ? AND container = ? AND name = ?', (account_name, container_name, object_name))
         res = c.fetchone()
         if not res:
             self.send_error(httplib.NOT_FOUND)
             return
-        (fn_uuid, length, md5_hash, meta, last_modified, expires, user_meta, store) = res
+        (fn_uuid, length, meta, last_modified, expires, user_meta) = res
         if expires and expires <= time.time():
             self.send_error(httplib.NOT_FOUND)
             return
@@ -216,6 +216,9 @@ class UnladenRequestHandler():
         else:
             user_meta = {}
         aes_key = meta['aes_key'].decode('hex')
+        c.execute('SELECT store FROM files WHERE uuid = ?', (fn_uuid,))
+        res = c.fetchone()
+        (store,) = res
         store_dir = self.http.server.config['stores'][store]['directory']
         self.http.send_response(httplib.OK)
         if 'content_type' in meta:
@@ -232,7 +235,7 @@ class UnladenRequestHandler():
         if expires:
             self.http.send_header('X-Delete-At', expires)
         self.http.send_header('X-Unladen-Uuid', fn_uuid)
-        self.http.send_header('ETag', md5_hash)
+        self.http.send_header('ETag', meta['hash'])
         for header in user_meta:
             self.http.send_header(('X-Object-Meta-%s' % header).encode('utf-8'), user_meta[header].encode('utf-8'))
         self.http.end_headers()
@@ -296,6 +299,7 @@ class UnladenRequestHandler():
         else:
             aes_key = os.urandom(32)
         meta = {}
+        meta_file = {}
         meta['aes_key'] = aes_key.encode('hex')
         if 'x-detect-content-type' in self.http.headers and self.http.headers['x-detect-content-type'] == 'true':
             (content_type_guess, content_encoding_guess) = mimetypes.guess_type(object_name)
@@ -328,6 +332,8 @@ class UnladenRequestHandler():
         iv = os.urandom(block_size)
         cipher = Crypto.Cipher.AES.new(aes_key, Crypto.Cipher.AES.MODE_CBC, iv)
         m = hashlib.md5()
+        m_file = hashlib.md5()
+        bytes_disk = 0
         with open(os.path.join(contentdir, fn_uuid), 'wb') as w:
             w.write(iv)
             bytesread = 0
@@ -340,27 +346,38 @@ class UnladenRequestHandler():
                 m.update(blk)
                 if (len(blk) % block_size) > 0:
                     blk = blk + '\0'*(block_size - (len(blk) % block_size))
-                w.write(cipher.encrypt(blk))
+                blk_encrypted = cipher.encrypt(blk)
+                m_file.update(blk_encrypted)
+                w.write(blk_encrypted)
+                bytes_disk = bytes_disk + len(blk_encrypted)
                 toread = 1024
                 if (bytesread + toread) > length:
                     toread = length - bytesread
                 blk = self.http.rfile.read(toread)
                 bytesread = bytesread + len(blk)
         md5_hash = m.hexdigest()
+        md5_hash_file = m_file.hexdigest()
         if 'etag' in self.http.headers:
             if not self.http.headers['etag'].lower() == md5_hash:
                 self.send_error(httplib.CONFLICT)
                 return
+        meta['hash'] = md5_hash
+        meta_file['hash'] = md5_hash_file
         c = self.conn.cursor()
-        c.execute('SELECT uuid, store FROM objects WHERE account = ? AND container = ? AND name = ?', (account_name, container_name, object_name))
+        c.execute('SELECT uuid FROM objects WHERE account = ? AND container = ? AND name = ?', (account_name, container_name, object_name))
         res = c.fetchone()
         if res:
-            (old_fn_uuid, old_store) = res
+            (old_fn_uuid,) = res
+            c.execute('SELECT store FROM files WHERE uuid = ?', (fn_uuid,))
+            res = c.fetchone()
+            (old_store,) = res
             old_store_dir = self.http.server.config['stores'][old_store]['directory']
             c.execute('DELETE FROM objects WHERE uuid = ?', (old_fn_uuid,))
+            c.execute('DELETE FROM files WHERE uuid = ?', (old_fn_uuid,))
             os.remove(os.path.join(old_store_dir, old_fn_uuid[0:2], old_fn_uuid[2:4], old_fn_uuid))
             self.conn.commit()
-        c.execute('INSERT INTO objects (uuid, account, container, name, store, bytes, last_modified, expires, meta, hash, user_meta) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', (fn_uuid, account_name, container_name, object_name, store, length, last_modified, expires, json.dumps(meta), md5_hash, json.dumps(user_meta)))
+        c.execute('INSERT INTO objects (uuid, account, container, name, bytes, last_modified, expires, meta, user_meta) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', (fn_uuid, account_name, container_name, object_name, length, last_modified, expires, json.dumps(meta), json.dumps(user_meta)))
+        c.execute('INSERT INTO files (uuid, bytes_disk, store, uploader, created, meta) VALUES (?, ?, ?, ?, ?, ?)', (fn_uuid, bytes_disk, store, self.authenticated_account, last_modified, json.dumps(meta_file)))
         self.conn.commit()
         self.http.send_response(httplib.CREATED)
         if 'content_type' in meta:
@@ -432,14 +449,18 @@ class UnladenRequestHandler():
     def do_delete_object(self, account_name, container_name, object_name):
         """Handle object-level DELETE operations."""
         c = self.conn.cursor()
-        c.execute('SELECT uuid, store FROM objects WHERE account = ? AND container = ? AND name = ?', (account_name, container_name, object_name))
+        c.execute('SELECT uuid FROM objects WHERE account = ? AND container = ? AND name = ?', (account_name, container_name, object_name))
         res = c.fetchone()
         if not res:
             self.send_error(httplib.NOT_FOUND)
             return
-        (fn_uuid, store) = res
+        (fn_uuid,) = res
+        c.execute('SELECT store FROM files WHERE uuid = ?', (fn_uuid,))
+        res = c.fetchone()
+        (store,) = res
         store_dir = self.http.server.config['stores'][store]['directory']
         c.execute('DELETE FROM objects WHERE uuid = ?', (fn_uuid,))
+        c.execute('DELETE FROM files WHERE uuid = ?', (fn_uuid,))
         os.remove(os.path.join(store_dir, fn_uuid[0:2], fn_uuid[2:4], fn_uuid))
         self.conn.commit()
         self.http.send_response(httplib.NO_CONTENT)

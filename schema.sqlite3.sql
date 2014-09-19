@@ -1,13 +1,20 @@
+CREATE TABLE files (
+    uuid text,
+    bytes_disk int,
+    store text,
+    uploader text,
+    created int,
+    meta text
+);
+
 CREATE TABLE objects (
     uuid text,
     account text,
     container text,
     name text,
     bytes int,
-    store text,
     last_modified int,
     expires int,
-    hash text,
     meta text,
     user_meta text
 );
