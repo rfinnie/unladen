@@ -153,11 +153,31 @@ class UnladenRequestHandler():
         self.http.send_header('X-Container-Object-Count', objects)
         self.http.end_headers()
 
+    def do_head_file_container(self):
+        """Handle file container-level HEAD operations."""
+        c = self.conn.cursor()
+        c.execute('SELECT COUNT(*), SUM(bytes_disk) FROM files WHERE uploader = ?', (self.authenticated_account,))
+        (files, bytes) = c.fetchone()
+        total_config_bytes = 0
+        for store in self.http.server.config['stores']:
+            total_config_bytes = total_config_bytes + self.http.server.config['stores'][store]['size']
+        self.http.send_response(httplib.NO_CONTENT)
+        self.http.send_header('X-Container-Bytes-Used', bytes)
+        self.http.send_header('X-Container-Object-Count', files)
+        self.http.send_header('X-Unladen-Node-Capacity', total_config_bytes)
+        self.http.end_headers()
+
     def do_head_object(self, account_name, container_name, object_name):
         """Handle object-level HEAD operations."""
         # Use the GET handler -- it will know when to stop if it's
         # actually a HEAD.
         self.do_get_object(account_name, container_name, object_name)
+
+    def do_head_file(self, fn_uuid):
+        """Handle file-level HEAD operations."""
+        # Use the GET handler -- it will know when to stop if it's
+        # actually a HEAD.
+        self.do_get_file(fn_uuid)
 
     def do_get_account(self, account_name):
         """Handle account-level GET operations."""
@@ -193,6 +213,23 @@ class UnladenRequestHandler():
         if len(out) == 0:
             self.send_error(httplib.NOT_FOUND)
             return
+        self.output_file_list(out)
+
+    def do_get_file_container(self):
+        """Handle file container-level GET operations."""
+        if 'marker' in self.http.query:
+            self.output_file_list([])
+            return
+        c = self.conn.cursor()
+        c.execute('SELECT uuid, bytes_disk, created, meta FROM files WHERE uploader = ?', (self.authenticated_account,))
+        out = []
+        for (uuid, bytes, last_modified, meta) in c.fetchall():
+            if meta:
+                meta = json.loads(meta)
+            else:
+                meta = {}
+            content_type = 'application/octet-stream'
+            out.append({'name': uuid, 'hash': meta['hash'], 'bytes': bytes, 'last_modified': last_modified, 'content_type': content_type})
         self.output_file_list(out)
 
     def do_get_object(self, account_name, container_name, object_name):
@@ -234,7 +271,6 @@ class UnladenRequestHandler():
         self.http.send_header('X-Timestamp', last_modified)
         if expires:
             self.http.send_header('X-Delete-At', expires)
-        self.http.send_header('X-Unladen-Uuid', fn_uuid)
         self.http.send_header('ETag', meta['hash'])
         for header in user_meta:
             self.http.send_header(('X-Object-Meta-%s' % header).encode('utf-8'), user_meta[header].encode('utf-8'))
@@ -258,6 +294,35 @@ class UnladenRequestHandler():
                 blk = r.read(1024)
                 bytesread = bytesread + len(blk)
 
+    def do_get_file(self, fn_uuid):
+        """Handle file-level GET operations."""
+        if not fn_uuid:
+            self.send_error(httplib.BAD_REQUEST)
+            return
+        c = self.conn.cursor()
+        c.execute('SELECT bytes_disk, store, created, meta FROM files WHERE uuid = ?', (fn_uuid,))
+        res = c.fetchone()
+        if not res:
+            self.send_error(httplib.NOT_FOUND)
+            return
+        (length, store, last_modified, meta) = res
+        meta = json.loads(meta)
+        store_dir = self.http.server.config['stores'][store]['directory']
+        self.http.send_response(httplib.OK)
+        self.http.send_header('Content-Type', 'application/octet-stream')
+        self.http.send_header('Content-Length', length)
+        self.http.send_header('Last-Modified', self.http.date_time_string(last_modified))
+        self.http.send_header('X-Timestamp', last_modified)
+        self.http.send_header('ETag', meta['hash'])
+        self.http.end_headers()
+        if self.http.command == 'HEAD':
+            return
+        with open(os.path.join(store_dir, fn_uuid[0:2], fn_uuid[2:4], fn_uuid), 'rb') as r:
+            blk = r.read(1024)
+            while blk:
+                self.http.wfile.write(blk)
+                blk = r.read(1024)
+
     def do_put_account(self, account_name):
         """Handle account-level PUT operations.
 
@@ -268,6 +333,12 @@ class UnladenRequestHandler():
 
     def do_put_container(self, account_name, container_name):
         """Handle container-level PUT operations."""
+        self.http.send_response(httplib.CREATED)
+        self.http.send_header('Content-Length', 0)
+        self.http.end_headers()
+
+    def do_put_file_container(self):
+        """Handle file container-level PUT operations."""
         self.http.send_response(httplib.CREATED)
         self.http.send_header('Content-Length', 0)
         self.http.end_headers()
@@ -335,7 +406,9 @@ class UnladenRequestHandler():
         m_file = hashlib.md5()
         bytes_disk = 0
         with open(os.path.join(contentdir, fn_uuid), 'wb') as w:
+            m_file.update(iv)
             w.write(iv)
+            bytes_disk = bytes_disk + len(iv)
             bytesread = 0
             toread = 1024
             if (bytesread + toread) > length:
@@ -390,7 +463,64 @@ class UnladenRequestHandler():
             self.http.send_header('Content-Disposition', meta['content_disposition'].encode('utf-8'))
         self.http.send_header('Content-Length', 0)
         self.http.send_header('ETag', md5_hash)
-        self.http.send_header('X-Trans-Id', fn_uuid)
+        self.http.end_headers()
+
+    def do_put_file(self, fn_uuid):
+        """Handle file-level PUT operations."""
+        if not fn_uuid:
+            self.send_error(httplib.BAD_REQUEST)
+            return
+        if not 'content-length' in self.http.headers:
+            self.send_error(httplib.LENGTH_REQUIRED)
+            return
+        length = int(self.http.headers['content-length'])
+        try:
+            uuid.UUID(fn_uuid)
+        except ValueError:
+            self.send_error(httplib.BAD_REQUEST)
+            return
+        c = self.conn.cursor()
+        c.execute('SELECT store FROM files WHERE uuid = ?', (fn_uuid,))
+        res = c.fetchone()
+        if res:
+            self.send_error(httplib.CONFLICT)
+            return
+        now = time.time()
+        meta_file = {}
+        store = self.choose_store()
+        store_dir = self.http.server.config['stores'][store]['directory']
+        contentdir = os.path.join(store_dir, fn_uuid[0:2], fn_uuid[2:4])
+        if not os.path.isdir(contentdir):
+            os.makedirs(contentdir)
+        m_file = hashlib.md5()
+        bytes_disk = 0
+        with open(os.path.join(contentdir, fn_uuid), 'wb') as w:
+            bytesread = 0
+            toread = 1024
+            if (bytesread + toread) > length:
+                toread = length - bytesread
+            blk = self.http.rfile.read(toread)
+            bytesread = bytesread + len(blk)
+            while blk:
+                m_file.update(blk)
+                w.write(blk)
+                bytes_disk = bytes_disk + len(blk)
+                toread = 1024
+                if (bytesread + toread) > length:
+                    toread = length - bytesread
+                blk = self.http.rfile.read(toread)
+                bytesread = bytesread + len(blk)
+        md5_hash_file = m_file.hexdigest()
+        if 'etag' in self.http.headers:
+            if not self.http.headers['etag'].lower() == md5_hash_file:
+                self.send_error(httplib.CONFLICT)
+                return
+        meta_file['hash'] = md5_hash_file
+        c.execute('INSERT INTO files (uuid, bytes_disk, store, uploader, created, meta) VALUES (?, ?, ?, ?, ?, ?)', (fn_uuid, bytes_disk, store, self.authenticated_account, now, json.dumps(meta_file)))
+        self.conn.commit()
+        self.http.send_response(httplib.CREATED)
+        self.http.send_header('Content-Length', 0)
+        self.http.send_header('ETag', md5_hash_file)
         self.http.end_headers()
 
     def do_post_account(self, account_name):
@@ -466,6 +596,22 @@ class UnladenRequestHandler():
         self.http.send_response(httplib.NO_CONTENT)
         self.http.end_headers()
 
+    def do_delete_file(self, fn_uuid):
+        """Handle file-level DELETE operations."""
+        c = self.conn.cursor()
+        c.execute('SELECT store FROM files WHERE uuid = ?', (fn_uuid,))
+        res = c.fetchone()
+        if not res:
+            self.send_error(httplib.NOT_FOUND)
+            return
+        (store,) = res
+        store_dir = self.http.server.config['stores'][store]['directory']
+        c.execute('DELETE FROM files WHERE uuid = ?', (fn_uuid,))
+        os.remove(os.path.join(store_dir, fn_uuid[0:2], fn_uuid[2:4], fn_uuid))
+        self.conn.commit()
+        self.http.send_response(httplib.NO_CONTENT)
+        self.http.end_headers()
+
     def authenticate_token(self, user_token):
         c = self.conn.cursor()
         c.execute('SELECT account FROM tokens_cache WHERE id = ? AND expires > ?', (user_token, time.time()))
@@ -493,11 +639,19 @@ class UnladenRequestHandler():
             level = 'account'
             args = [r_fn[1]]
         elif len(r_fn) == 3:
-            level = 'container'
-            args = [r_fn[1], r_fn[2]]
+            if r_fn[2] == '808f1b75-a011-4ea7-82a5-e6aad1092fea':
+                level = 'file_container'
+                args = []
+            else:
+                level = 'container'
+                args = [r_fn[1], r_fn[2]]
         else:
-            level = 'object'
-            args = [r_fn[1], r_fn[2], '/'.join(r_fn[3:])]
+            if r_fn[2] == '808f1b75-a011-4ea7-82a5-e6aad1092fea':
+                level = 'file'
+                args = [r_fn[3]]
+            else:
+                level = 'object'
+                args = [r_fn[1], r_fn[2], '/'.join(r_fn[3:])]
         try:
             call_func = getattr(self, 'do_%s_%s' % (mode, level))
         except AttributeError:
