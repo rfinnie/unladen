@@ -65,6 +65,7 @@ class UnladenRequestHandler():
         self.http.send_response(httplib.NO_CONTENT)
         storage_url = self.http.server.config['auth_tempauth']['storage_url']
         self.http.send_header('X-Storage-Url', '%s/%s' % (storage_url, account_name))
+        self.http.send_header('X-Unladen-Base-Url', storage_url)
         self.http.send_header('X-Auth-Token', token)
         self.http.end_headers()
         return True
