@@ -304,14 +304,12 @@ class UnladenRequestHandler():
             r = open(os.path.join(store_dir, fn_uuid[0:2], fn_uuid[2:4], fn_uuid), 'rb')
         if not cipher:
             iv = r.read(block_size)
-            cipher = Crypto.Cipher.AES.new(aes_key, Crypto.Cipher.AES.MODE_CBC, iv)
+            cipher = Crypto.Cipher.AES.new(aes_key, Crypto.Cipher.AES.MODE_CFB, iv)
         bytesread = 0
         blk = r.read(1024)
         bytesread = bytesread + len(blk)
         while blk:
             buf = cipher.decrypt(blk)
-            if bytesread > length:
-                buf = buf[:(length-bytesread)]
             self.http.wfile.write(buf)
             blk = r.read(1024)
             bytesread = bytesread + len(blk)
@@ -423,7 +421,7 @@ class UnladenRequestHandler():
             os.makedirs(contentdir)
         block_size = Crypto.Cipher.AES.block_size
         iv = os.urandom(block_size)
-        cipher = Crypto.Cipher.AES.new(aes_key, Crypto.Cipher.AES.MODE_CBC, iv)
+        cipher = Crypto.Cipher.AES.new(aes_key, Crypto.Cipher.AES.MODE_CFB, iv)
         m = hashlib.md5()
         m_file = hashlib.md5()
         bytes_disk = 0
@@ -439,8 +437,6 @@ class UnladenRequestHandler():
             bytesread = bytesread + len(blk)
             while blk:
                 m.update(blk)
-                if (len(blk) % block_size) > 0:
-                    blk = blk + '\0'*(block_size - (len(blk) % block_size))
                 blk_encrypted = cipher.encrypt(blk)
                 m_file.update(blk_encrypted)
                 w.write(blk_encrypted)
