@@ -28,6 +28,7 @@ import mimetypes
 import traceback
 import httplib
 import random
+import urlparse
 
 
 class UnladenRequestHandler():
@@ -158,6 +159,8 @@ class UnladenRequestHandler():
         c = self.conn.cursor()
         c.execute('SELECT COUNT(*), SUM(bytes_disk) FROM files WHERE uploader = ?', (self.authenticated_account,))
         (files, bytes) = c.fetchone()
+        if not bytes:
+            bytes = 0
         total_config_bytes = 0
         for store in self.http.server.config['stores']:
             total_config_bytes = total_config_bytes + self.http.server.config['stores'][store]['size']
@@ -253,10 +256,6 @@ class UnladenRequestHandler():
         else:
             user_meta = {}
         aes_key = meta['aes_key'].decode('hex')
-        c.execute('SELECT store FROM files WHERE uuid = ?', (fn_uuid,))
-        res = c.fetchone()
-        (store,) = res
-        store_dir = self.http.server.config['stores'][store]['directory']
         self.http.send_response(httplib.OK)
         if 'content_type' in meta:
             self.http.send_header('Content-Type', meta['content_type'].encode('utf-8'))
@@ -279,20 +278,43 @@ class UnladenRequestHandler():
             return
         block_size = Crypto.Cipher.AES.block_size
         cipher = None
-        with open(os.path.join(store_dir, fn_uuid[0:2], fn_uuid[2:4], fn_uuid), 'rb') as r:
-            if not cipher:
-                iv = r.read(block_size)
-                cipher = Crypto.Cipher.AES.new(aes_key, Crypto.Cipher.AES.MODE_CBC, iv)
-            bytesread = 0
+        peer = None
+        if len(meta['disk_peers']) > 0:
+            peer = random.choice(meta['disk_peers'])
+            if self.http.server.config['node_id'] == peer:
+                peer = None
+        if peer:
+            c.execute('SELECT storage_url, token FROM cluster_peers WHERE peer = ?', (peer,))
+            res = c.fetchone()
+            (peer_storage_url, peer_token) = res
+            peer_url = urlparse.urlparse(peer_storage_url)
+            if peer_url.scheme == 'https':
+                h = httplib.HTTPSConnection(peer_url.netloc, timeout=5)
+            else:
+                h = httplib.HTTPConnection(peer_url.netloc, timeout=5)
+            h.putrequest('GET', '%s/%s/%s' % (peer_url.path, '808f1b75-a011-4ea7-82a5-e6aad1092fea', fn_uuid))
+            h.putheader('X-Auth-Token', peer_token)
+            h.endheaders()
+            r = h.getresponse()
+        else:
+            c.execute('SELECT store FROM files WHERE uuid = ?', (fn_uuid,))
+            res = c.fetchone()
+            (store,) = res
+            store_dir = self.http.server.config['stores'][store]['directory']
+            r = open(os.path.join(store_dir, fn_uuid[0:2], fn_uuid[2:4], fn_uuid), 'rb')
+        if not cipher:
+            iv = r.read(block_size)
+            cipher = Crypto.Cipher.AES.new(aes_key, Crypto.Cipher.AES.MODE_CBC, iv)
+        bytesread = 0
+        blk = r.read(1024)
+        bytesread = bytesread + len(blk)
+        while blk:
+            buf = cipher.decrypt(blk)
+            if bytesread > length:
+                buf = buf[:(length-bytesread)]
+            self.http.wfile.write(buf)
             blk = r.read(1024)
             bytesread = bytesread + len(blk)
-            while blk:
-                buf = cipher.decrypt(blk)
-                if bytesread > length:
-                    buf = buf[:(length-bytesread)]
-                self.http.wfile.write(buf)
-                blk = r.read(1024)
-                bytesread = bytesread + len(blk)
 
     def do_get_file(self, fn_uuid):
         """Handle file-level GET operations."""
@@ -436,6 +458,7 @@ class UnladenRequestHandler():
                 return
         meta['hash'] = md5_hash
         meta_file['hash'] = md5_hash_file
+        meta['disk_peers'] = [self.http.server.config['node_id']]
         c = self.conn.cursor()
         c.execute('SELECT uuid FROM objects WHERE account = ? AND container = ? AND name = ?', (account_name, container_name, object_name))
         res = c.fetchone()

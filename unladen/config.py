@@ -20,6 +20,7 @@
 import json
 import os
 import copy
+import platform
 
 if __file__.startswith('/usr/lib'):
     DEFAULT_CONFIG_DIR = '/etc/unladen'
@@ -34,7 +35,9 @@ else:
 DEFAULT_CONFIG = {
     'data_dir': DEFAULT_DATA_DIR,
     'debug': False,
+    'node_id': platform.node(),
     'stores': {},
+    'peers': {},
     'httpd': {
         'handlers': ['auth_tempauth', 'swift_v1', 'status'],
         'listen': {
@@ -81,6 +84,10 @@ def get_config(config_dir='', config_cl={}):
 
     # Merge anything from the command line
     config = dict_merge(config, config_cl)
+
+    # Handle empty node ID
+    if not config['node_id']:
+        config['node_id'] = 'default'
 
     # Build default storage_url if not specified
     if not config['auth_tempauth']['storage_url']:

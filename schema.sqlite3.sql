@@ -1,3 +1,13 @@
+CREATE TABLE cluster_peers (
+    peer text,
+    peer_updated int,
+    storage_url text,
+    token text,
+    token_expires int,
+    total_size int,
+    used_size int
+);
+
 CREATE TABLE files (
     uuid text,
     bytes_disk int,
