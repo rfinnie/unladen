@@ -1,0 +1,272 @@
+#!/usr/bin/env python
+
+# Unladen
+# Copyright (C) 2014 Ryan Finnie
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License along
+# with this program; if not, write to the Free Software Foundation, Inc.,
+# 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+
+import sys
+import unladen.config
+import getopt
+import sqlite3
+import os
+import shutil
+import random
+import time
+import httplib
+import json
+import urlparse
+
+
+class UnladenMaint():
+    def __init__(self, config):
+        self.config = config
+        self.data_dir = self.config['data_dir']
+        self.conn = sqlite3.connect(os.path.join(self.data_dir, 'catalog.sqlite'))
+
+    def clean_tokens_cache(self):
+        c = self.conn.cursor()
+        time_target = time.time() - 3600
+        c.execute('DELETE FROM tokens_cache WHERE expires < ?', (time_target,))
+        self.conn.commit()
+
+    def peers_maint(self):
+        c = self.conn.cursor()
+        c.execute('SELECT peer, peer_updated, storage_url, token, token_expires, total_size, used_size FROM cluster_peers', ())
+        sql_peers = []
+        todelete = []
+        for (peer, peer_updated, storage_url, token, token_expires, total_size, used_size) in c.fetchall():
+            if peer not in self.config['peers']:
+                todelete.append(peer)
+                continue
+            sql_peers.append((peer, peer_updated, storage_url, token, token_expires, total_size, used_size))
+        for peer in todelete:
+            c.execute('DELETE FROM cluster_peers WHERE peer = ?', (peer,))
+        self.conn.commit()
+        for (peer, peer_updated, storage_url, token, token_expires, total_size, used_size) in sql_peers:
+            now = int(time.time())
+            if time.time() > ((token_expires - peer_updated) / 2):
+                url = urlparse.urlparse(self.config['peers'][peer]['auth']['url'])
+                if url.scheme == 'https':
+                    h = httplib.HTTPSConnection(url.netloc, timeout=5)
+                else:
+                    h = httplib.HTTPConnection(url.netloc, timeout=5)
+                h.putrequest('GET', url.path)
+                h.putheader('X-Auth-User', self.config['peers'][peer]['auth']['username'])
+                h.putheader('X-Auth-Key', self.config['peers'][peer]['auth']['password'])
+                h.endheaders()
+                res = h.getresponse()
+                print res.getheaders()
+                token = res.getheader('x-auth-token')
+                token_expires = now + 86400
+                storage_url = res.getheader('x-storage-url')
+            url = urlparse.urlparse(storage_url)
+            if url.scheme == 'https':
+                h = httplib.HTTPSConnection(url.netloc, timeout=5)
+            else:
+                h = httplib.HTTPConnection(url.netloc, timeout=5)
+            h.putrequest('HEAD', '%s/%s' % (url.path, '808f1b75-a011-4ea7-82a5-e6aad1092fea'))
+            h.putheader('X-Auth-Token', token)
+            h.endheaders()
+            res = h.getresponse()
+            print res.getheaders()
+            total_size = int(res.getheader('x-unladen-node-capacity'))
+            used_size = int(res.getheader('x-container-bytes-used'))
+            c.execute('UPDATE cluster_peers SET peer_updated = ?, storage_url = ?, token = ?, token_expires = ?, total_size = ?, used_size = ? WHERE peer = ?', (now, storage_url, token, token_expires, total_size, used_size, peer))
+            self.conn.commit()
+
+    def replication_thingy(self):
+        c = self.conn.cursor()
+        tosync = []
+        c.execute('SELECT uuid, meta from objects', ())
+        for (fn_uuid, meta) in c.fetchall():
+            meta = json.loads(meta)
+            for peer in self.config['peers']:
+                if peer not in meta['disk_peers']:
+                    tosync.append((fn_uuid, peer))
+        for (fn_uuid, peer) in tosync:
+            c.execute('SELECT bytes_disk, store, meta FROM files WHERE uuid = ?', (fn_uuid,))
+            res = c.fetchone()
+            (bytes_disk, store, meta_file) = res
+            meta_file = json.loads(meta_file)
+            print '%s %s %s' % (fn_uuid, store, meta_file['hash'])
+            store_dir = self.config['stores'][store]['directory']
+            c.execute('SELECT storage_url, token FROM cluster_peers WHERE peer = ?', (peer,))
+            res = c.fetchone()
+            (peer_storage_url, peer_token) = res
+            peer_url = urlparse.urlparse(peer_storage_url)
+            if peer_url.scheme == 'https':
+                h = httplib.HTTPSConnection(peer_url.netloc, timeout=5)
+            else:
+                h = httplib.HTTPConnection(peer_url.netloc, timeout=5)
+            h.putrequest('PUT', '%s/%s/%s' % (peer_url.path, '808f1b75-a011-4ea7-82a5-e6aad1092fea', fn_uuid))
+            h.putheader('Content-Length', bytes_disk)
+            h.putheader('X-Auth-Token', peer_token)
+            h.putheader('ETag', meta_file['hash'])
+            h.endheaders()
+            with open(os.path.join(store_dir, fn_uuid[0:2], fn_uuid[2:4], fn_uuid), 'rb') as r:
+                blk = r.read(1024)
+                while blk:
+                    h.send(blk)
+                    blk = r.read(1024)
+            res = h.getresponse()
+            c.execute('SELECT meta FROM objects WHERE uuid = ?', (fn_uuid,))
+            res = c.fetchone()
+            (meta,) = res
+            meta = json.loads(meta)
+            meta['disk_peers'].append(peer)
+            c.execute('UPDATE objects SET meta = ? WHERE uuid = ?', (json.dumps(meta), fn_uuid))
+            self.conn.commit()
+
+    def delete_expired_objects(self):
+        c = self.conn.cursor()
+        now = time.time()
+        c.execute('SELECT files.uuid, files.store FROM objects, files WHERE objects.expires <= ? AND objects.uuid = files.uuid', (now,))
+        to_delete = []
+        for (fn_uuid, store) in c.fetchall():
+            to_delete.append((fn_uuid, store))
+        for (fn_uuid, store) in to_delete:
+            c.execute('DELETE FROM objects WHERE uuid = ?', (fn_uuid,))
+            c.execute('DELETE FROM files WHERE uuid = ?', (fn_uuid,))
+            self.conn.commit()
+            store_dir = self.config['stores'][store]['directory']
+            contentdir = os.path.join(store_dir, fn_uuid[0:2], fn_uuid[2:4])
+            os.remove(os.path.join(contentdir, fn_uuid))
+
+    def check_store_balance(self):
+        c = self.conn.cursor()
+        c.execute('SELECT store, COUNT(*), SUM(bytes_disk) FROM files GROUP BY store', ())
+        store_stats = {}
+        total_bytes = 0
+        total_objects = 0
+        for (store, objects, bytes) in c.fetchall():
+            total_bytes = total_bytes + bytes
+            total_objects = total_objects + objects
+            store_stats[store] = (objects, bytes)
+        if total_objects == 0:
+            return
+        total_config_bytes = 0
+        for store in self.config['stores']:
+            total_config_bytes = total_config_bytes + self.config['stores'][store]['size']
+        rebalance_stores = False
+        total_transfer_out = 0
+        total_transfer_in = 0
+        transfer_d = {}
+        for store in sorted(self.config['stores']):
+            if store in store_stats:
+                (objects, bytes) = store_stats[store]
+            else:
+                (objects, bytes) = (0, 0)
+            objects_pct = float(objects) / total_objects
+            bytes_pct = float(bytes) / total_bytes
+            config_pct = float(self.config['stores'][store]['size']) / total_config_bytes
+            config_pct_delta = bytes_pct - config_pct
+            print '%s: %d objects (%0.02f%%), %d bytes (%0.02f%%, %0.02f%% from config)' % (store, objects, objects_pct * 100.0, bytes, bytes_pct * 100.0, config_pct_delta * 100.0)
+            should_have = int(total_bytes * config_pct)
+            print '    Should have %d bytes' % should_have
+            transfer = bytes - should_have
+            transfer_d[store] = transfer
+            if transfer > 0:
+                print '    Transfer %d bytes out' % abs(transfer)
+                total_transfer_out = total_transfer_out + abs(transfer)
+            else:
+                print '    Transfer %d bytes in' % abs(transfer)
+                total_transfer_in = total_transfer_in + abs(transfer)
+            if abs(config_pct_delta) > 0.01:
+                rebalance_stores = True
+        if rebalance_stores:
+            print 'Time to rebalance the stores'
+        else:
+            print 'Stores are sufficiently balanced'
+            return
+        transfer_orders = []
+        for store_from in transfer_d:
+            if transfer_d[store_from] < 0:
+                continue
+            stores_transfer_to = {}
+            for store_to in transfer_d:
+                if transfer_d[store_to] > 0:
+                    continue
+                x = int(float(abs(transfer_d[store_to])) / total_transfer_in * transfer_d[store_from])
+                print 'Transfer %d bytes from %s to %s' % (x, store_from, store_to)
+                if x > 0:
+                    stores_transfer_to[store_to] = x
+            bytes_left = x
+            c.execute('SELECT uuid, bytes_disk FROM files WHERE store = ? ORDER BY RANDOM()', (store_from,))
+            for (fn_uuid, bytes) in c.fetchall():
+                store_to = None
+                bytes_left = 0
+                for store_to_candidate in stores_transfer_to:
+                    if float(bytes) / stores_transfer_to[store_to_candidate] < 1.05:
+                        store_to = store_to_candidate
+                        bytes_left = stores_transfer_to[store_to_candidate]
+                        break
+                if not store_to:
+                    continue
+                print 'Move %s (%d) from %s to %s' % (fn_uuid, bytes, store_from, store_to)
+                transfer_orders.append((fn_uuid, store_from, store_to))
+                bytes_left = bytes_left - bytes
+                if bytes_left <= 0:
+                    del(stores_transfer_to[store_to])
+                else:
+                    stores_transfer_to[store_to] = bytes_left
+                if len(stores_transfer_to) == 0:
+                    break
+        print ''
+        print ''
+        random.shuffle(transfer_orders)
+        for (fn_uuid, store_from, store_to) in transfer_orders:
+            print '%s %s %s' % (fn_uuid, store_from, store_to)
+            store_dir_from = self.config['stores'][store_from]['directory']
+            contentdir_from = os.path.join(store_dir_from, fn_uuid[0:2], fn_uuid[2:4])
+            store_dir_to = self.config['stores'][store_to]['directory']
+            contentdir_to = os.path.join(store_dir_to, fn_uuid[0:2], fn_uuid[2:4])
+            if not os.path.isdir(contentdir_to):
+                os.makedirs(contentdir_to)
+            shutil.copy(os.path.join(contentdir_from, fn_uuid), os.path.join(contentdir_to, fn_uuid))
+            c.execute('UPDATE files SET store = ? WHERE uuid = ?', (store_to, fn_uuid))
+            self.conn.commit()
+            os.remove(os.path.join(contentdir_from, fn_uuid))
+
+
+def main():
+    try:
+        opts, args = getopt.getopt(sys.argv[1:], '', ['config-dir=', 'debug'])
+    except getopt.GetoptError as err:
+        print str(err)
+        sys.exit(1)
+
+    config_dir = ''
+    config_cl = {}
+    for o, a in opts:
+        if o == '--config-dir':
+            config_dir = 'a'
+        elif o == '--debug':
+            config_cl['debug'] = True
+        else:
+            assert False, "unhandled option"
+
+    config = unladen.config.get_config(config_dir, config_cl)
+
+    maint = UnladenMaint(config)
+    maint.clean_tokens_cache()
+    maint.delete_expired_objects()
+    maint.check_store_balance()
+    maint.peers_maint()
+    maint.replication_thingy()
+
+
+if __name__ == '__main__':
+    main()
