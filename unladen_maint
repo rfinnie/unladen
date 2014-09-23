@@ -334,7 +334,7 @@ def main():
     config_cl = {}
     for o, a in opts:
         if o == '--config-dir':
-            config_dir = 'a'
+            config_dir = a
         elif o == '--debug':
             config_cl['debug'] = True
         else:
