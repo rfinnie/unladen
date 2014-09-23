@@ -281,8 +281,6 @@ class UnladenRequestHandler():
         peer = None
         if len(meta['disk_peers']) > 0:
             peer = random.choice(meta['disk_peers'])
-            if self.http.server.config['node_id'] == peer:
-                peer = None
         if peer:
             c.execute('SELECT storage_url, token FROM cluster_peers WHERE peer = ?', (peer,))
             res = c.fetchone()
@@ -297,11 +295,8 @@ class UnladenRequestHandler():
             h.endheaders()
             r = h.getresponse()
         else:
-            c.execute('SELECT store FROM files WHERE uuid = ?', (fn_uuid,))
-            res = c.fetchone()
-            (store,) = res
-            store_dir = self.http.server.config['stores'][store]['directory']
-            r = open(os.path.join(store_dir, fn_uuid[0:2], fn_uuid[2:4], fn_uuid), 'rb')
+            contentdir = os.path.join(self.http.server.config['staging_files_dir'], fn_uuid[0:2], fn_uuid[2:4])
+            r = open(os.path.join(contentdir, fn_uuid), 'rb')
         if not cipher:
             iv = r.read(block_size)
             cipher = Crypto.Cipher.AES.new(aes_key, Crypto.Cipher.AES.MODE_CFB, iv)
@@ -414,9 +409,7 @@ class UnladenRequestHandler():
         for header in self.http.headers:
             if header.lower().startswith('x-object-meta-'):
                 user_meta[header[14:]] = self.http.headers[header]
-        store = self.choose_store()
-        store_dir = self.http.server.config['stores'][store]['directory']
-        contentdir = os.path.join(store_dir, fn_uuid[0:2], fn_uuid[2:4])
+        contentdir = os.path.join(self.http.server.config['staging_files_dir'], fn_uuid[0:2], fn_uuid[2:4])
         if not os.path.isdir(contentdir):
             os.makedirs(contentdir)
         block_size = Crypto.Cipher.AES.block_size
@@ -454,22 +447,15 @@ class UnladenRequestHandler():
                 return
         meta['hash'] = md5_hash
         meta_file['hash'] = md5_hash_file
-        meta['disk_peers'] = [self.http.server.config['node_id']]
+        meta['disk_peers'] = []
         c = self.conn.cursor()
         c.execute('SELECT uuid FROM objects WHERE account = ? AND container = ? AND name = ?', (account_name, container_name, object_name))
         res = c.fetchone()
         if res:
             (old_fn_uuid,) = res
-            c.execute('SELECT store FROM files WHERE uuid = ?', (fn_uuid,))
-            res = c.fetchone()
-            (old_store,) = res
-            old_store_dir = self.http.server.config['stores'][old_store]['directory']
             c.execute('DELETE FROM objects WHERE uuid = ?', (old_fn_uuid,))
-            c.execute('DELETE FROM files WHERE uuid = ?', (old_fn_uuid,))
-            os.remove(os.path.join(old_store_dir, old_fn_uuid[0:2], old_fn_uuid[2:4], old_fn_uuid))
             self.conn.commit()
         c.execute('INSERT INTO objects (uuid, account, container, name, bytes, last_modified, expires, meta, user_meta) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', (fn_uuid, account_name, container_name, object_name, length, last_modified, expires, json.dumps(meta), json.dumps(user_meta)))
-        c.execute('INSERT INTO files (uuid, bytes_disk, store, uploader, created, meta) VALUES (?, ?, ?, ?, ?, ?)', (fn_uuid, bytes_disk, store, self.authenticated_account, last_modified, json.dumps(meta_file)))
         self.conn.commit()
         self.http.send_response(httplib.CREATED)
         if 'content_type' in meta:
@@ -604,13 +590,7 @@ class UnladenRequestHandler():
             self.send_error(httplib.NOT_FOUND)
             return
         (fn_uuid,) = res
-        c.execute('SELECT store FROM files WHERE uuid = ?', (fn_uuid,))
-        res = c.fetchone()
-        (store,) = res
-        store_dir = self.http.server.config['stores'][store]['directory']
         c.execute('DELETE FROM objects WHERE uuid = ?', (fn_uuid,))
-        c.execute('DELETE FROM files WHERE uuid = ?', (fn_uuid,))
-        os.remove(os.path.join(store_dir, fn_uuid[0:2], fn_uuid[2:4], fn_uuid))
         self.conn.commit()
         self.http.send_response(httplib.NO_CONTENT)
         self.http.end_headers()

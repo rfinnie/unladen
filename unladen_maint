@@ -28,6 +28,7 @@ import time
 import httplib
 import json
 import urlparse
+import hashlib
 
 
 class UnladenMaint():
@@ -35,6 +36,44 @@ class UnladenMaint():
         self.config = config
         self.data_dir = self.config['data_dir']
         self.conn = sqlite3.connect(os.path.join(self.data_dir, 'catalog.sqlite'))
+
+    def random_weighted(self, m):
+        """Return a weighted random key."""
+        total = sum([v for v in m.itervalues()])
+        weighted = []
+        tp = 0
+        for (k, v) in m.iteritems():
+            tp = tp + (float(v) / total)
+            weighted.append((k, tp))
+        r = random.random()
+        for (k, v) in weighted:
+            if r < v:
+                return k
+
+    def choose_peers(self, existing_peers, peer_weights, target):
+        confidence = 0.0
+        out = []
+        for peer in existing_peers:
+            if peer in self.config['peers']:
+                out.append(peer)
+                confidence = confidence + (self.config['peers'][peer]['confidence'] / 100.0)
+        if confidence >= target:
+            return out
+        peer_candidates = {}
+        for peer in self.config['peers']:
+            if peer in out:
+                continue
+            peer_candidates[peer] = peer_weights[peer]
+        if len(peer_candidates) == 0:
+            return out
+        while confidence < target:
+            peer = self.random_weighted(peer_candidates)
+            out.append(peer)
+            confidence = confidence + (self.config['peers'][peer]['confidence'] / 100.0)
+            del(peer_candidates[peer])
+            if len(peer_candidates) == 0:
+                return out
+        return out
 
     def clean_tokens_cache(self):
         c = self.conn.cursor()
@@ -45,17 +84,21 @@ class UnladenMaint():
     def peers_maint(self):
         c = self.conn.cursor()
         c.execute('SELECT peer, peer_updated, storage_url, token, token_expires, total_size, used_size FROM cluster_peers', ())
-        sql_peers = []
+        sql_peers = {}
         todelete = []
         for (peer, peer_updated, storage_url, token, token_expires, total_size, used_size) in c.fetchall():
             if peer not in self.config['peers']:
                 todelete.append(peer)
                 continue
-            sql_peers.append((peer, peer_updated, storage_url, token, token_expires, total_size, used_size))
+            sql_peers[peer] = (peer_updated, storage_url, token, token_expires, total_size, used_size)
         for peer in todelete:
             c.execute('DELETE FROM cluster_peers WHERE peer = ?', (peer,))
         self.conn.commit()
-        for (peer, peer_updated, storage_url, token, token_expires, total_size, used_size) in sql_peers:
+        for peer in self.config['peers']:
+            if peer in sql_peers:
+                (peer_updated, storage_url, token, token_expires, total_size, used_size) = sql_peers[peer]
+            else:
+                (peer_updated, storage_url, token, token_expires, total_size, used_size) = (0, None, None, 0, 0, 0)
             now = int(time.time())
             if time.time() > ((token_expires - peer_updated) / 2):
                 url = urlparse.urlparse(self.config['peers'][peer]['auth']['url'])
@@ -84,25 +127,42 @@ class UnladenMaint():
             print res.getheaders()
             total_size = int(res.getheader('x-unladen-node-capacity'))
             used_size = int(res.getheader('x-container-bytes-used'))
-            c.execute('UPDATE cluster_peers SET peer_updated = ?, storage_url = ?, token = ?, token_expires = ?, total_size = ?, used_size = ? WHERE peer = ?', (now, storage_url, token, token_expires, total_size, used_size, peer))
+            if peer in sql_peers:
+                c.execute('UPDATE cluster_peers SET peer_updated = ?, storage_url = ?, token = ?, token_expires = ?, total_size = ?, used_size = ? WHERE peer = ?', (now, storage_url, token, token_expires, total_size, used_size, peer))
+            else:
+                c.execute('INSERT INTO cluster_peers (peer, peer_updated, storage_url, token, token_expires, total_size, used_size) VALUES (?, ?, ?, ?, ?, ?, ?)', (peer, now, storage_url, token, token_expires, total_size, used_size))
             self.conn.commit()
 
     def replication_thingy(self):
         c = self.conn.cursor()
-        tosync = []
+        peer_weights = {}
+        c.execute('SELECT peer, total_size, used_size FROM cluster_peers', ())
+        for (peer, total_size, used_size) in c.fetchall():
+            peer_weights[peer] = total_size
+        toadd = []
+        todel = []
         c.execute('SELECT uuid, meta from objects', ())
         for (fn_uuid, meta) in c.fetchall():
             meta = json.loads(meta)
-            for peer in self.config['peers']:
-                if peer not in meta['disk_peers']:
-                    tosync.append((fn_uuid, peer))
-        for (fn_uuid, peer) in tosync:
-            c.execute('SELECT bytes_disk, store, meta FROM files WHERE uuid = ?', (fn_uuid,))
-            res = c.fetchone()
-            (bytes_disk, store, meta_file) = res
-            meta_file = json.loads(meta_file)
-            print '%s %s %s' % (fn_uuid, store, meta_file['hash'])
-            store_dir = self.config['stores'][store]['directory']
+            new_peers = self.choose_peers(meta['disk_peers'], peer_weights, 3.0)
+            for peer in new_peers:
+                if not peer in meta['disk_peers']:
+                    toadd.append((fn_uuid, peer))
+            for peer in meta['disk_peers']:
+                if not peer in new_peers:
+                    todel.append((fn_uuid, peer))
+
+        for (fn_uuid, peer) in toadd:
+            contentdir = os.path.join(self.config['staging_files_dir'], fn_uuid[0:2], fn_uuid[2:4])
+            bytes_disk = os.path.getsize(os.path.join(contentdir, fn_uuid))
+            m = hashlib.md5()
+            with open(os.path.join(contentdir, fn_uuid), 'rb') as r:
+                blk = r.read(m.block_size)
+                while blk:
+                    m.update(blk)
+                    blk = r.read(m.block_size)
+            md5_hash = m.hexdigest()
+            print 'ADD %s %s %s' % (fn_uuid, peer, md5_hash)
             c.execute('SELECT storage_url, token FROM cluster_peers WHERE peer = ?', (peer,))
             res = c.fetchone()
             (peer_storage_url, peer_token) = res
@@ -114,9 +174,9 @@ class UnladenMaint():
             h.putrequest('PUT', '%s/%s/%s' % (peer_url.path, '808f1b75-a011-4ea7-82a5-e6aad1092fea', fn_uuid))
             h.putheader('Content-Length', bytes_disk)
             h.putheader('X-Auth-Token', peer_token)
-            h.putheader('ETag', meta_file['hash'])
+            h.putheader('ETag', md5_hash)
             h.endheaders()
-            with open(os.path.join(store_dir, fn_uuid[0:2], fn_uuid[2:4], fn_uuid), 'rb') as r:
+            with open(os.path.join(contentdir, fn_uuid), 'rb') as r:
                 blk = r.read(1024)
                 while blk:
                     h.send(blk)
@@ -130,6 +190,29 @@ class UnladenMaint():
             c.execute('UPDATE objects SET meta = ? WHERE uuid = ?', (json.dumps(meta), fn_uuid))
             self.conn.commit()
 
+        for (fn_uuid, peer) in todel:
+            print 'DEL %s %s' % (fn_uuid, peer)
+            if peer in self.config['peers']:
+                c.execute('SELECT storage_url, token FROM cluster_peers WHERE peer = ?', (peer,))
+                res = c.fetchone()
+                (peer_storage_url, peer_token) = res
+                peer_url = urlparse.urlparse(peer_storage_url)
+                if peer_url.scheme == 'https':
+                    h = httplib.HTTPSConnection(peer_url.netloc, timeout=5)
+                else:
+                    h = httplib.HTTPConnection(peer_url.netloc, timeout=5)
+                h.putrequest('DELETE', '%s/%s/%s' % (peer_url.path, '808f1b75-a011-4ea7-82a5-e6aad1092fea', fn_uuid))
+                h.putheader('X-Auth-Token', peer_token)
+                h.endheaders()
+                res = h.getresponse()
+            c.execute('SELECT meta FROM objects WHERE uuid = ?', (fn_uuid,))
+            res = c.fetchone()
+            (meta,) = res
+            meta = json.loads(meta)
+            meta['disk_peers'].remove(peer)
+            c.execute('UPDATE objects SET meta = ? WHERE uuid = ?', (json.dumps(meta), fn_uuid))
+            self.conn.commit()
+
     def delete_expired_objects(self):
         c = self.conn.cursor()
         now = time.time()
@@ -139,7 +222,6 @@ class UnladenMaint():
             to_delete.append((fn_uuid, store))
         for (fn_uuid, store) in to_delete:
             c.execute('DELETE FROM objects WHERE uuid = ?', (fn_uuid,))
-            c.execute('DELETE FROM files WHERE uuid = ?', (fn_uuid,))
             self.conn.commit()
             store_dir = self.config['stores'][store]['directory']
             contentdir = os.path.join(store_dir, fn_uuid[0:2], fn_uuid[2:4])

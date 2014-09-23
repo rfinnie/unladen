@@ -34,6 +34,7 @@ else:
 
 DEFAULT_CONFIG = {
     'data_dir': DEFAULT_DATA_DIR,
+    'staging_files_dir': None,
     'debug': False,
     'node_id': platform.node(),
     'stores': {},
@@ -100,6 +101,15 @@ def get_config(config_dir='', config_cl={}):
         if config['httpd']['listen']['ipv6']:
             addr = '[%s]' % addr
         config['auth_tempauth']['storage_url'] = 'http://%s:%d/v1' % (addr, config['httpd']['listen']['port'])
+
+    if not config['staging_files_dir']:
+        config['staging_files_dir'] = os.path.join(config['data_dir'], 'staging_files')
+
+    for peer in config['peers']:
+        if not 'auth' in config['peers'][peer]:
+            raise Exception('"auth" not specified for peer "%s"' % peer)
+        if not 'confidence' in config['peers'][peer]:
+            config['peers'][peer]['confidence'] = 100
 
     # Check stores configuration for completeness
     if not config['stores']:
