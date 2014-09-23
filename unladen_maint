@@ -216,16 +216,37 @@ class UnladenMaint():
     def delete_expired_objects(self):
         c = self.conn.cursor()
         now = time.time()
-        c.execute('SELECT files.uuid, files.store FROM objects, files WHERE objects.expires <= ? AND objects.uuid = files.uuid', (now,))
-        to_delete = []
-        for (fn_uuid, store) in c.fetchall():
-            to_delete.append((fn_uuid, store))
-        for (fn_uuid, store) in to_delete:
+        c.execute('UPDATE objects SET deleted = 1 WHERE expires <= ?', (now,))
+        self.conn.commit()
+
+    def purge_deleted_objects(self):
+        c = self.conn.cursor()
+        c.execute('SELECT uuid, meta FROM objects WHERE deleted = 1', ())
+        to_purge = []
+        for (fn_uuid, meta) in c.fetchall():
+            meta = json.loads(meta)
+            to_purge.append((fn_uuid, meta))
+        for (fn_uuid, meta) in to_purge:
+            for peer in meta['disk_peers']:
+                if not peer in self.config['peers']:
+                    continue
+                c.execute('SELECT storage_url, token FROM cluster_peers WHERE peer = ?', (peer,))
+                res = c.fetchone()
+                (peer_storage_url, peer_token) = res
+                peer_url = urlparse.urlparse(peer_storage_url)
+                if peer_url.scheme == 'https':
+                    h = httplib.HTTPSConnection(peer_url.netloc, timeout=5)
+                else:
+                    h = httplib.HTTPConnection(peer_url.netloc, timeout=5)
+                h.putrequest('DELETE', '%s/%s/%s' % (peer_url.path, '808f1b75-a011-4ea7-82a5-e6aad1092fea', fn_uuid))
+                h.putheader('X-Auth-Token', peer_token)
+                h.endheaders()
+                res = h.getresponse()
             c.execute('DELETE FROM objects WHERE uuid = ?', (fn_uuid,))
             self.conn.commit()
-            store_dir = self.config['stores'][store]['directory']
-            contentdir = os.path.join(store_dir, fn_uuid[0:2], fn_uuid[2:4])
-            os.remove(os.path.join(contentdir, fn_uuid))
+            contentdir = os.path.join(self.config['staging_files_dir'], fn_uuid[0:2], fn_uuid[2:4])
+            if os.path.isfile(os.path.join(contentdir, fn_uuid)):
+                os.remove(os.path.join(contentdir, fn_uuid))
 
     def check_store_balance(self):
         c = self.conn.cursor()
@@ -344,9 +365,10 @@ def main():
 
     maint = UnladenMaint(config)
     maint.clean_tokens_cache()
-    maint.delete_expired_objects()
-    maint.check_store_balance()
     maint.peers_maint()
+    maint.delete_expired_objects()
+    maint.purge_deleted_objects()
+    maint.check_store_balance()
     maint.replication_thingy()
 
 

@@ -25,6 +25,7 @@ CREATE TABLE objects (
     bytes int,
     last_modified int,
     expires int,
+    deleted int,
     meta text,
     user_meta text
 );

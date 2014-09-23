@@ -133,7 +133,7 @@ class UnladenRequestHandler():
     def do_head_account(self, account_name):
         """Handle account-level HEAD operations."""
         c = self.conn.cursor()
-        c.execute('SELECT COUNT(*), COUNT(DISTINCT container), SUM(bytes) FROM objects WHERE account = ?', (account_name,))
+        c.execute('SELECT COUNT(*), COUNT(DISTINCT container), SUM(bytes) FROM objects WHERE account = ? AND deleted = 0', (account_name,))
         (objects, containers, bytes) = c.fetchone()
         self.http.send_response(httplib.NO_CONTENT)
         self.http.send_header('X-Account-Container-Count', containers)
@@ -144,7 +144,7 @@ class UnladenRequestHandler():
     def do_head_container(self, account_name, container_name):
         """Handle container-level HEAD operations."""
         c = self.conn.cursor()
-        c.execute('SELECT COUNT(*), SUM(bytes) FROM objects WHERE account = ? AND container = ?', (account_name, container_name))
+        c.execute('SELECT COUNT(*), SUM(bytes) FROM objects WHERE account = ? AND container = ? AND deleted = 0', (account_name, container_name))
         (objects, bytes) = c.fetchone()
         if objects == 0:
             self.send_error(httplib.NOT_FOUND)
@@ -191,7 +191,7 @@ class UnladenRequestHandler():
             self.output_file_list([])
             return
         c = self.conn.cursor()
-        c.execute('SELECT container, COUNT(*), SUM(bytes) FROM objects WHERE account = ? GROUP BY container', (account_name,))
+        c.execute('SELECT container, COUNT(*), SUM(bytes) FROM objects WHERE account = ? AND deleted = 0 GROUP BY container', (account_name,))
         out = []
         for (container_name, count, bytes) in c.fetchall():
             out.append({'name': container_name, 'count': count, 'bytes': bytes})
@@ -203,7 +203,7 @@ class UnladenRequestHandler():
             self.output_file_list([])
             return
         c = self.conn.cursor()
-        c.execute('SELECT name, bytes, last_modified, expires, meta FROM objects WHERE account = ? AND container = ?', (account_name, container_name))
+        c.execute('SELECT name, bytes, last_modified, expires, meta FROM objects WHERE account = ? AND container = ? AND deleted = 0', (account_name, container_name))
         out = []
         for (name, bytes, last_modified, expires, meta) in c.fetchall():
             if expires and expires <= time.time():
@@ -241,7 +241,7 @@ class UnladenRequestHandler():
     def do_get_object(self, account_name, container_name, object_name):
         """Handle object-level GET operations."""
         c = self.conn.cursor()
-        c.execute('SELECT uuid, bytes, meta, last_modified, expires, user_meta FROM objects WHERE account = ? AND container = ? AND name = ?', (account_name, container_name, object_name))
+        c.execute('SELECT uuid, bytes, meta, last_modified, expires, user_meta FROM objects WHERE account = ? AND container = ? AND name = ? AND deleted = 0', (account_name, container_name, object_name))
         res = c.fetchone()
         if not res:
             self.send_error(httplib.NOT_FOUND)
@@ -455,13 +455,13 @@ class UnladenRequestHandler():
         meta_file['hash'] = md5_hash_file
         meta['disk_peers'] = []
         c = self.conn.cursor()
-        c.execute('SELECT uuid FROM objects WHERE account = ? AND container = ? AND name = ?', (account_name, container_name, object_name))
+        c.execute('SELECT uuid FROM objects WHERE account = ? AND container = ? AND name = ? AND deleted = 0', (account_name, container_name, object_name))
         res = c.fetchone()
         if res:
             (old_fn_uuid,) = res
-            c.execute('DELETE FROM objects WHERE uuid = ?', (old_fn_uuid,))
+            c.execute('UPDATE objects SET deleted = 1 WHERE uuid = ?', (old_fn_uuid,))
             self.conn.commit()
-        c.execute('INSERT INTO objects (uuid, account, container, name, bytes, last_modified, expires, meta, user_meta) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', (fn_uuid, account_name, container_name, object_name, length, last_modified, expires, json.dumps(meta), json.dumps(user_meta)))
+        c.execute('INSERT INTO objects (uuid, deleted, account, container, name, bytes, last_modified, expires, meta, user_meta) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', (fn_uuid, 0, account_name, container_name, object_name, length, last_modified, expires, json.dumps(meta), json.dumps(user_meta)))
         self.conn.commit()
         self.http.send_response(httplib.CREATED)
         if 'content_type' in meta:
@@ -552,7 +552,7 @@ class UnladenRequestHandler():
     def do_post_object(self, account_name, container_name, object_name):
         """Handle object-level POST operations."""
         c = self.conn.cursor()
-        c.execute('SELECT uuid, expires FROM objects WHERE account = ? AND container = ? AND name = ?', (account_name, container_name, object_name))
+        c.execute('SELECT uuid, expires FROM objects WHERE account = ? AND container = ? AND name = ? AND deleted = 0', (account_name, container_name, object_name))
         res = c.fetchone()
         if not res:
             self.send_error(httplib.NOT_FOUND)
@@ -582,7 +582,7 @@ class UnladenRequestHandler():
     def do_delete_container(self, account_name, container_name):
         """Handle container-level DELETE operations."""
         c = self.conn.cursor()
-        c.execute('SELECT COUNT(*) FROM objects WHERE account = ? AND container = ?', (account_name, container_name))
+        c.execute('SELECT COUNT(*) FROM objects WHERE account = ? AND container = ? AND deleted = 0', (account_name, container_name))
         (objects,) = c.fetchone()
         if objects > 0:
             self.send_error(httplib.CONFLICT)
@@ -593,13 +593,13 @@ class UnladenRequestHandler():
     def do_delete_object(self, account_name, container_name, object_name):
         """Handle object-level DELETE operations."""
         c = self.conn.cursor()
-        c.execute('SELECT uuid FROM objects WHERE account = ? AND container = ? AND name = ?', (account_name, container_name, object_name))
+        c.execute('SELECT uuid FROM objects WHERE account = ? AND container = ? AND name = ? AND deleted = 0', (account_name, container_name, object_name))
         res = c.fetchone()
         if not res:
             self.send_error(httplib.NOT_FOUND)
             return
         (fn_uuid,) = res
-        c.execute('DELETE FROM objects WHERE uuid = ?', (fn_uuid,))
+        c.execute('UPDATE objects SET deleted = 1 WHERE uuid = ?', (fn_uuid,))
         self.conn.commit()
         self.http.send_response(httplib.NO_CONTENT)
         self.http.end_headers()
