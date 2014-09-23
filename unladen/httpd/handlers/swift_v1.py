@@ -156,6 +156,9 @@ class UnladenRequestHandler():
 
     def do_head_file_container(self):
         """Handle file container-level HEAD operations."""
+        if len(self.http.server.config['stores']) == 0:
+            self.send_error(httplib.BAD_REQUEST)
+            return
         c = self.conn.cursor()
         c.execute('SELECT COUNT(*), SUM(bytes_disk) FROM files WHERE uploader = ?', (self.authenticated_account,))
         (files, bytes) = c.fetchone()
@@ -311,6 +314,9 @@ class UnladenRequestHandler():
 
     def do_get_file(self, fn_uuid):
         """Handle file-level GET operations."""
+        if len(self.http.server.config['stores']) == 0:
+            self.send_error(httplib.BAD_REQUEST)
+            return
         if not fn_uuid:
             self.send_error(httplib.BAD_REQUEST)
             return
@@ -472,6 +478,9 @@ class UnladenRequestHandler():
 
     def do_put_file(self, fn_uuid):
         """Handle file-level PUT operations."""
+        if len(self.http.server.config['stores']) == 0:
+            self.send_error(httplib.BAD_REQUEST)
+            return
         if not fn_uuid:
             self.send_error(httplib.BAD_REQUEST)
             return
@@ -597,6 +606,9 @@ class UnladenRequestHandler():
 
     def do_delete_file(self, fn_uuid):
         """Handle file-level DELETE operations."""
+        if len(self.http.server.config['stores']) == 0:
+            self.send_error(httplib.BAD_REQUEST)
+            return
         c = self.conn.cursor()
         c.execute('SELECT store FROM files WHERE uuid = ?', (fn_uuid,))
         res = c.fetchone()

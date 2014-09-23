@@ -112,12 +112,6 @@ def get_config(config_dir='', config_cl={}):
             config['peers'][peer]['confidence'] = 100
 
     # Check stores configuration for completeness
-    if not config['stores']:
-        config['stores'] = {
-            'default': {
-                'directory': os.path.join(config['data_dir'], 'stores', 'default')
-            }
-        }
     for store in config['stores']:
         if not 'directory' in config['stores'][store]:
             raise Exception('"directory" not specified for store "%s"' % store)
