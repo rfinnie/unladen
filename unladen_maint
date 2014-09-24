@@ -144,16 +144,41 @@ class UnladenMaint():
         c.execute('SELECT uuid, meta from objects', ())
         for (fn_uuid, meta) in c.fetchall():
             meta = json.loads(meta)
-            new_peers = self.choose_peers(meta['disk_peers'], peer_weights, 3.0)
-            for peer in new_peers:
-                if not peer in meta['disk_peers']:
-                    toadd.append((fn_uuid, peer))
+            existing_peers = []
             for peer in meta['disk_peers']:
+                if peer in self.config['peers']:
+                    existing_peers.append(peer)
+            new_peers = self.choose_peers(existing_peers, peer_weights, 3.0)
+            for peer in new_peers:
+                if not peer in existing_peers:
+                    toadd.append((fn_uuid, peer, existing_peers))
+            for peer in existing_peers:
                 if not peer in new_peers:
                     todel.append((fn_uuid, peer))
 
-        for (fn_uuid, peer) in toadd:
+        staging_delete = []
+        for (fn_uuid, peer, existing_peers) in toadd:
             contentdir = os.path.join(self.config['staging_files_dir'], fn_uuid[0:2], fn_uuid[2:4])
+            if not os.path.isfile(os.path.join(contentdir, fn_uuid)):
+                remote_peer = random.choice(existing_peers)
+                print 'PULL %s %s' % (fn_uuid, remote_peer)
+                c.execute('SELECT storage_url, token FROM cluster_peers WHERE peer = ?', (remote_peer,))
+                res = c.fetchone()
+                (peer_storage_url, peer_token) = res
+                peer_url = urlparse.urlparse(peer_storage_url)
+                if peer_url.scheme == 'https':
+                    h = httplib.HTTPSConnection(peer_url.netloc, timeout=5)
+                else:
+                    h = httplib.HTTPConnection(peer_url.netloc, timeout=5)
+                h.putrequest('GET', '%s/%s/%s' % (peer_url.path, '808f1b75-a011-4ea7-82a5-e6aad1092fea', fn_uuid))
+                h.putheader('X-Auth-Token', peer_token)
+                h.endheaders()
+                r = h.getresponse()
+                with open(os.path.join(contentdir, fn_uuid), 'wb') as w:
+                    blk = r.read(1024)
+                    while blk:
+                        w.write(blk)
+                        blk = r.read(1024)
             bytes_disk = os.path.getsize(os.path.join(contentdir, fn_uuid))
             m = hashlib.md5()
             with open(os.path.join(contentdir, fn_uuid), 'rb') as r:
@@ -189,6 +214,8 @@ class UnladenMaint():
             meta['disk_peers'].append(peer)
             c.execute('UPDATE objects SET meta = ? WHERE uuid = ?', (json.dumps(meta), fn_uuid))
             self.conn.commit()
+            if not fn_uuid in staging_delete:
+                staging_delete.append(fn_uuid)
 
         for (fn_uuid, peer) in todel:
             print 'DEL %s %s' % (fn_uuid, peer)
@@ -212,6 +239,11 @@ class UnladenMaint():
             meta['disk_peers'].remove(peer)
             c.execute('UPDATE objects SET meta = ? WHERE uuid = ?', (json.dumps(meta), fn_uuid))
             self.conn.commit()
+
+        for fn_uuid in staging_delete:
+            contentdir = os.path.join(self.config['staging_files_dir'], fn_uuid[0:2], fn_uuid[2:4])
+            if os.path.isfile(os.path.join(contentdir, fn_uuid)):
+                os.remove(os.path.join(contentdir, fn_uuid))
 
     def delete_expired_objects(self):
         c = self.conn.cursor()
