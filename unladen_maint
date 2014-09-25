@@ -32,6 +32,8 @@ import hashlib
 
 
 class UnladenMaint():
+    cluster_peers_cache = {}
+
     def __init__(self, config):
         self.config = config
         self.data_dir = self.config['data_dir']
@@ -84,6 +86,7 @@ class UnladenMaint():
 
     def peers_maint(self):
         c = self.conn.cursor()
+        self.cluster_peers_cache = {}
         c.execute('SELECT peer, peer_updated, storage_url, token, token_expires, total_size, used_size FROM cluster_peers', ())
         sql_peers = {}
         todelete = []
@@ -132,13 +135,14 @@ class UnladenMaint():
                 c.execute('UPDATE cluster_peers SET peer_updated = ?, storage_url = ?, token = ?, token_expires = ?, total_size = ?, used_size = ? WHERE peer = ?', (now, storage_url, token, token_expires, total_size, used_size, peer))
             else:
                 c.execute('INSERT INTO cluster_peers (peer, peer_updated, storage_url, token, token_expires, total_size, used_size) VALUES (?, ?, ?, ?, ?, ?, ?)', (peer, now, storage_url, token, token_expires, total_size, used_size))
+            self.cluster_peers_cache[peer] = (peer_updated, storage_url, token, token_expires, total_size, used_size)
             self.conn.commit()
 
     def replication_thingy(self):
         c = self.conn.cursor()
         peer_weights = {}
-        c.execute('SELECT peer, total_size, used_size FROM cluster_peers', ())
-        for (peer, total_size, used_size) in c.fetchall():
+        for peer in self.cluster_peers_cache:
+            (peer_updated, storage_url, token, token_expires, total_size, used_size) = self.cluster_peers_cache[peer]
             peer_weights[peer] = total_size
         toadd = []
         todel = []
@@ -163,9 +167,8 @@ class UnladenMaint():
             if not os.path.isfile(os.path.join(contentdir, fn_uuid)):
                 remote_peer = random.choice(existing_peers)
                 print 'PULL %s %s' % (fn_uuid, remote_peer)
-                c.execute('SELECT storage_url, token FROM cluster_peers WHERE peer = ?', (remote_peer,))
-                res = c.fetchone()
-                (peer_storage_url, peer_token) = res
+                peer_storage_url = self.cluster_peers_cache[remote_peer][1]
+                peer_token = self.cluster_peers_cache[remote_peer][2]
                 peer_url = urlparse.urlparse(peer_storage_url)
                 if peer_url.scheme == 'https':
                     h = httplib.HTTPSConnection(peer_url.netloc, timeout=5)
@@ -189,9 +192,8 @@ class UnladenMaint():
                     blk = r.read(m.block_size)
             md5_hash = m.hexdigest()
             print 'ADD %s %s %s' % (fn_uuid, peer, md5_hash)
-            c.execute('SELECT storage_url, token FROM cluster_peers WHERE peer = ?', (peer,))
-            res = c.fetchone()
-            (peer_storage_url, peer_token) = res
+            peer_storage_url = self.cluster_peers_cache[peer][1]
+            peer_token = self.cluster_peers_cache[peer][2]
             peer_url = urlparse.urlparse(peer_storage_url)
             if peer_url.scheme == 'https':
                 h = httplib.HTTPSConnection(peer_url.netloc, timeout=5)
@@ -221,9 +223,8 @@ class UnladenMaint():
         for (fn_uuid, peer) in todel:
             print 'DEL %s %s' % (fn_uuid, peer)
             if peer in self.config['peers']:
-                c.execute('SELECT storage_url, token FROM cluster_peers WHERE peer = ?', (peer,))
-                res = c.fetchone()
-                (peer_storage_url, peer_token) = res
+                peer_storage_url = self.cluster_peers_cache[peer][1]
+                peer_token = self.cluster_peers_cache[peer][2]
                 peer_url = urlparse.urlparse(peer_storage_url)
                 if peer_url.scheme == 'https':
                     h = httplib.HTTPSConnection(peer_url.netloc, timeout=5)
@@ -264,9 +265,8 @@ class UnladenMaint():
             for peer in meta['disk_peers']:
                 if not peer in self.config['peers']:
                     continue
-                c.execute('SELECT storage_url, token FROM cluster_peers WHERE peer = ?', (peer,))
-                res = c.fetchone()
-                (peer_storage_url, peer_token) = res
+                peer_storage_url = self.cluster_peers_cache[peer][1]
+                peer_token = self.cluster_peers_cache[peer][2]
                 peer_url = urlparse.urlparse(peer_storage_url)
                 if peer_url.scheme == 'https':
                     h = httplib.HTTPSConnection(peer_url.netloc, timeout=5)
