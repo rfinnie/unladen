@@ -29,10 +29,12 @@ import httplib
 import json
 import urlparse
 import hashlib
+import threading
 
 
 class UnladenMaint():
     cluster_peers_cache = {}
+    sema = threading.Semaphore(10)
 
     def __init__(self, config):
         self.config = config
@@ -138,7 +140,7 @@ class UnladenMaint():
             self.cluster_peers_cache[peer] = (peer_updated, storage_url, token, token_expires, total_size, used_size)
             self.conn.commit()
 
-    def replication_thingy(self):
+    def object_replication(self):
         c = self.conn.cursor()
         peer_weights = {}
         for peer in self.cluster_peers_cache:
@@ -162,11 +164,75 @@ class UnladenMaint():
                     todel.append((fn_uuid, peer))
 
         staging_delete = []
-        for (fn_uuid, peer, existing_peers) in toadd:
+        if len(toadd) > 0:
+            print 'Starting threads...'
+            for (fn_uuid, peer, existing_peers) in toadd:
+                self.sema.acquire(blocking=True)
+                t = threading.Thread(target=self.replication_add_thread, args=(fn_uuid, peer, existing_peers))
+                t.start()
+            print 'Waiting for threads to finish...'
+            while threading.active_count() > 1:
+                time.sleep(0.5)
+            print 'All threads done.'
+            for (fn_uuid, peer, existing_peers) in toadd:
+                c.execute('SELECT meta FROM objects WHERE uuid = ?', (fn_uuid,))
+                res = c.fetchone()
+                (meta,) = res
+                meta = json.loads(meta)
+                meta['disk_peers'].append(peer)
+                c.execute('UPDATE objects SET meta = ? WHERE uuid = ?', (json.dumps(meta), fn_uuid))
+                self.conn.commit()
+                if not fn_uuid in staging_delete:
+                    staging_delete.append(fn_uuid)
+
+        if len(todel) > 0:
+            print 'Starting threads...'
+            for (fn_uuid, peer) in todel:
+                if not peer in self.config['peers']:
+                    continue
+                self.sema.acquire(blocking=True)
+                t = threading.Thread(target=self.replication_del_thread, args=(fn_uuid, peer))
+                t.start()
+            print 'Waiting for threads to finish...'
+            while threading.active_count() > 1:
+                time.sleep(0.5)
+            print 'All threads done.'
+            for (fn_uuid, peer) in todel:
+                c.execute('SELECT meta FROM objects WHERE uuid = ?', (fn_uuid,))
+                res = c.fetchone()
+                (meta,) = res
+                meta = json.loads(meta)
+                meta['disk_peers'].remove(peer)
+                c.execute('UPDATE objects SET meta = ? WHERE uuid = ?', (json.dumps(meta), fn_uuid))
+                self.conn.commit()
+
+        for fn_uuid in staging_delete:
+            contentdir = os.path.join(self.config['staging_files_dir'], fn_uuid[0:2], fn_uuid[2:4])
+            if os.path.isfile(os.path.join(contentdir, fn_uuid)):
+                os.remove(os.path.join(contentdir, fn_uuid))
+
+    def replication_del_thread(self, fn_uuid, peer):
+        if True:
+            print '%s DEL %s %s' % (repr(threading.current_thread()), fn_uuid, peer)
+            peer_storage_url = self.cluster_peers_cache[peer][1]
+            peer_token = self.cluster_peers_cache[peer][2]
+            peer_url = urlparse.urlparse(peer_storage_url)
+            if peer_url.scheme == 'https':
+                h = httplib.HTTPSConnection(peer_url.netloc, timeout=5)
+            else:
+                h = httplib.HTTPConnection(peer_url.netloc, timeout=5)
+            h.putrequest('DELETE', '%s/%s/%s' % (peer_url.path, '808f1b75-a011-4ea7-82a5-e6aad1092fea', fn_uuid))
+            h.putheader('X-Auth-Token', peer_token)
+            h.endheaders()
+            res = h.getresponse()
+            self.sema.release()
+
+    def replication_add_thread(self, fn_uuid, peer, existing_peers):
+        if True:
             contentdir = os.path.join(self.config['staging_files_dir'], fn_uuid[0:2], fn_uuid[2:4])
             if not os.path.isfile(os.path.join(contentdir, fn_uuid)):
                 remote_peer = random.choice(existing_peers)
-                print 'PULL %s %s' % (fn_uuid, remote_peer)
+                print '%s PULL %s %s' % (repr(threading.current_thread()), fn_uuid, remote_peer)
                 peer_storage_url = self.cluster_peers_cache[remote_peer][1]
                 peer_token = self.cluster_peers_cache[remote_peer][2]
                 peer_url = urlparse.urlparse(peer_storage_url)
@@ -191,7 +257,7 @@ class UnladenMaint():
                     m.update(blk)
                     blk = r.read(m.block_size)
             md5_hash = m.hexdigest()
-            print 'ADD %s %s %s' % (fn_uuid, peer, md5_hash)
+            print '%s ADD %s %s %s' % (repr(threading.current_thread()), fn_uuid, peer, md5_hash)
             peer_storage_url = self.cluster_peers_cache[peer][1]
             peer_token = self.cluster_peers_cache[peer][2]
             peer_url = urlparse.urlparse(peer_storage_url)
@@ -210,42 +276,7 @@ class UnladenMaint():
                     h.send(blk)
                     blk = r.read(1024)
             res = h.getresponse()
-            c.execute('SELECT meta FROM objects WHERE uuid = ?', (fn_uuid,))
-            res = c.fetchone()
-            (meta,) = res
-            meta = json.loads(meta)
-            meta['disk_peers'].append(peer)
-            c.execute('UPDATE objects SET meta = ? WHERE uuid = ?', (json.dumps(meta), fn_uuid))
-            self.conn.commit()
-            if not fn_uuid in staging_delete:
-                staging_delete.append(fn_uuid)
-
-        for (fn_uuid, peer) in todel:
-            print 'DEL %s %s' % (fn_uuid, peer)
-            if peer in self.config['peers']:
-                peer_storage_url = self.cluster_peers_cache[peer][1]
-                peer_token = self.cluster_peers_cache[peer][2]
-                peer_url = urlparse.urlparse(peer_storage_url)
-                if peer_url.scheme == 'https':
-                    h = httplib.HTTPSConnection(peer_url.netloc, timeout=5)
-                else:
-                    h = httplib.HTTPConnection(peer_url.netloc, timeout=5)
-                h.putrequest('DELETE', '%s/%s/%s' % (peer_url.path, '808f1b75-a011-4ea7-82a5-e6aad1092fea', fn_uuid))
-                h.putheader('X-Auth-Token', peer_token)
-                h.endheaders()
-                res = h.getresponse()
-            c.execute('SELECT meta FROM objects WHERE uuid = ?', (fn_uuid,))
-            res = c.fetchone()
-            (meta,) = res
-            meta = json.loads(meta)
-            meta['disk_peers'].remove(peer)
-            c.execute('UPDATE objects SET meta = ? WHERE uuid = ?', (json.dumps(meta), fn_uuid))
-            self.conn.commit()
-
-        for fn_uuid in staging_delete:
-            contentdir = os.path.join(self.config['staging_files_dir'], fn_uuid[0:2], fn_uuid[2:4])
-            if os.path.isfile(os.path.join(contentdir, fn_uuid)):
-                os.remove(os.path.join(contentdir, fn_uuid))
+            self.sema.release()
 
     def delete_expired_objects(self):
         c = self.conn.cursor()
@@ -261,10 +292,31 @@ class UnladenMaint():
         for (fn_uuid, meta) in c.fetchall():
             meta = json.loads(meta)
             to_purge.append((fn_uuid, meta))
-        for (fn_uuid, meta) in to_purge:
-            for peer in meta['disk_peers']:
-                if not peer in self.config['peers']:
-                    continue
+        if len(to_purge) > 0:
+            print 'Starting threads...'
+            for (fn_uuid, meta) in to_purge:
+                for peer in meta['disk_peers']:
+                    if not peer in self.config['peers']:
+                        continue
+                    self.sema.acquire(blocking=True)
+                    t = threading.Thread(target=self.purge_thread, args=(fn_uuid, peer))
+                    t.start()
+            print 'Waiting for threads to finish...'
+            while threading.active_count() > 1:
+                time.sleep(0.5)
+            print 'All threads done.'
+            for (fn_uuid, meta) in to_purge:
+                c.execute('DELETE FROM objects WHERE uuid = ?', (fn_uuid,))
+                self.conn.commit()
+                contentdir = os.path.join(self.config['staging_files_dir'], fn_uuid[0:2], fn_uuid[2:4])
+                if os.path.isfile(os.path.join(contentdir, fn_uuid)):
+                    os.remove(os.path.join(contentdir, fn_uuid))
+        print 'Purged %d objects' % len(to_purge)
+
+    def purge_thread(self, fn_uuid, peer):
+        if True:
+            if True:
+                print '%s PURGE %s %s' % (repr(threading.current_thread()), fn_uuid, peer)
                 peer_storage_url = self.cluster_peers_cache[peer][1]
                 peer_token = self.cluster_peers_cache[peer][2]
                 peer_url = urlparse.urlparse(peer_storage_url)
@@ -276,12 +328,7 @@ class UnladenMaint():
                 h.putheader('X-Auth-Token', peer_token)
                 h.endheaders()
                 res = h.getresponse()
-            c.execute('DELETE FROM objects WHERE uuid = ?', (fn_uuid,))
-            self.conn.commit()
-            contentdir = os.path.join(self.config['staging_files_dir'], fn_uuid[0:2], fn_uuid[2:4])
-            if os.path.isfile(os.path.join(contentdir, fn_uuid)):
-                os.remove(os.path.join(contentdir, fn_uuid))
-        print 'Purged %d objects' % len(to_purge)
+                self.sema.release()
 
     def check_store_balance(self):
         c = self.conn.cursor()
@@ -403,7 +450,7 @@ def main():
     last_delete_expired_objects = 0
     last_purge_deleted_objects = 0
     last_check_store_balance = 0
-    last_replication_thingy = 0
+    last_object_replication = 0
 
     maint = UnladenMaint(config)
     while True:
@@ -416,14 +463,14 @@ def main():
         if time.time() > (last_delete_expired_objects + 60):
             maint.delete_expired_objects()
             last_delete_expired_objects = time.time()
-        if time.time() > (last_purge_deleted_objects + 60):
+        if time.time() > (last_purge_deleted_objects + 10):
             maint.purge_deleted_objects()
             last_purge_deleted_objects = time.time()
         if time.time() > (last_check_store_balance + 60):
             maint.check_store_balance()
             last_check_store_balance = time.time()
-        if time.time() > (last_replication_thingy + 3):
-            maint.replication_thingy()
+        if time.time() > (last_object_replication + 3):
+            maint.object_replication()
             last_replication_thingy = time.time()
         time.sleep(1)
 
