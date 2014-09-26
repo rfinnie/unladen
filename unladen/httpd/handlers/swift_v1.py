@@ -17,7 +17,7 @@
 # with this program; if not, write to the Free Software Foundation, Inc.,
 # 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 
-import sqlite3
+import unladen.sql as sql
 import uuid
 import os
 import Crypto.Cipher.AES
@@ -37,7 +37,8 @@ class UnladenRequestHandler():
     def __init__(self, http):
         self.http = http
         self.data_dir = self.http.server.config['data_dir']
-        self.conn = sqlite3.connect(os.path.join(self.data_dir, 'catalog.sqlite'))
+        engine = sql.create_engine('sqlite:///%s' % os.path.join(self.data_dir, 'catalog.sqlite'), echo=self.http.server.config['debug'])
+        self.conn = engine.connect()
 
     def send_error(self, code, message=None):
         """Return a (possibly formatted) error.
@@ -132,9 +133,15 @@ class UnladenRequestHandler():
 
     def do_head_account(self, account_name):
         """Handle account-level HEAD operations."""
-        c = self.conn.cursor()
-        c.execute('SELECT COUNT(*), COUNT(DISTINCT container), SUM(bytes) FROM objects WHERE account = ? AND deleted = 0', (account_name,))
-        (objects, containers, bytes) = c.fetchone()
+        (objects, containers, bytes) = self.conn.execute(sql.select([
+            sql.count('*'),
+            sql.count(sql.distinct(sql.objects.c.container)),
+            sql.sum(sql.objects.c.bytes)
+        ]).where(
+            sql.objects.c.account == account_name
+        ).where(
+            sql.objects.c.deleted == False
+        )).fetchone()
         self.http.send_response(httplib.NO_CONTENT)
         self.http.send_header('X-Account-Container-Count', containers)
         self.http.send_header('X-Account-Bytes-Used', bytes)
@@ -143,9 +150,16 @@ class UnladenRequestHandler():
 
     def do_head_container(self, account_name, container_name):
         """Handle container-level HEAD operations."""
-        c = self.conn.cursor()
-        c.execute('SELECT COUNT(*), SUM(bytes) FROM objects WHERE account = ? AND container = ? AND deleted = 0', (account_name, container_name))
-        (objects, bytes) = c.fetchone()
+        (objects, bytes) = self.conn.execute(sql.select([
+            sql.count('*'),
+            sql.sum(sql.objects.c.bytes)
+        ]).where(
+            sql.objects.c.account == account_name
+        ).where(
+            sql.objects.c.container == container_name
+        ).where(
+            sql.objects.c.deleted == False
+        )).fetchone()
         if objects == 0:
             self.send_error(httplib.NOT_FOUND)
             return
@@ -159,9 +173,12 @@ class UnladenRequestHandler():
         if len(self.http.server.config['stores']) == 0:
             self.send_error(httplib.BAD_REQUEST)
             return
-        c = self.conn.cursor()
-        c.execute('SELECT COUNT(*), SUM(bytes_disk) FROM files WHERE uploader = ?', (self.authenticated_account,))
-        (files, bytes) = c.fetchone()
+        (files, bytes) = self.conn.execute(sql.select([
+            sql.count('*'),
+            sql.sum(sql.files.c.bytes_disk)
+        ]).where(
+            sql.objects.c.uploader == self.authenticated_account
+        )).fetchone()
         if not bytes:
             bytes = 0
         total_config_bytes = 0
@@ -190,10 +207,16 @@ class UnladenRequestHandler():
         if 'marker' in self.http.query:
             self.output_file_list([])
             return
-        c = self.conn.cursor()
-        c.execute('SELECT container, COUNT(*), SUM(bytes) FROM objects WHERE account = ? AND deleted = 0 GROUP BY container', (account_name,))
         out = []
-        for (container_name, count, bytes) in c.fetchall():
+        for (container_name, count, bytes) in self.conn.execute(sql.select([
+            sql.objects.c.container,
+            sql.count('*'),
+            sql.sum(sql.objects.c.bytes)
+        ]).where(
+            sql.objects.c.account == account_name
+        ).where(
+            sql.objects.c.deleted == False
+        ).group_by(sql.objects.c.container)):
             out.append({'name': container_name, 'count': count, 'bytes': bytes})
         self.output_file_list(out)
 
@@ -202,10 +225,20 @@ class UnladenRequestHandler():
         if 'marker' in self.http.query:
             self.output_file_list([])
             return
-        c = self.conn.cursor()
-        c.execute('SELECT name, bytes, last_modified, expires, meta FROM objects WHERE account = ? AND container = ? AND deleted = 0', (account_name, container_name))
         out = []
-        for (name, bytes, last_modified, expires, meta) in c.fetchall():
+        for (name, bytes, last_modified, expires, meta) in self.conn.execute(sql.select([
+            sql.objects.c.name,
+            sql.objects.c.bytes,
+            sql.objects.c.last_modified,
+            sql.objects.c.expires,
+            sql.objects.c.meta
+        ]).where(
+            sql.objects.c.account == account_name
+        ).where(
+            sql.objects.c.container == container_name
+        ).where(
+            sql.objects.c.deleted == False
+        )):
             if expires and expires <= time.time():
                 continue
             if meta:
@@ -226,23 +259,41 @@ class UnladenRequestHandler():
         if 'marker' in self.http.query:
             self.output_file_list([])
             return
-        c = self.conn.cursor()
-        c.execute('SELECT uuid, bytes_disk, created, meta FROM files WHERE uploader = ?', (self.authenticated_account,))
         out = []
-        for (uuid, bytes, last_modified, meta) in c.fetchall():
+        for (fn_uuid, bytes, last_modified, meta) in self.conn.execute(sql.select([
+            sql.files.c.uuid,
+            sql.files.c.bytes_disk,
+            sql.files.c.created,
+            sql.files.c.meta
+        ]).where(
+            sql.files.c.uploader == self.authenticated_account
+        )):
             if meta:
                 meta = json.loads(meta)
             else:
                 meta = {}
             content_type = 'application/octet-stream'
-            out.append({'name': uuid, 'hash': meta['hash'], 'bytes': bytes, 'last_modified': last_modified, 'content_type': content_type})
+            out.append({'name': fn_uuid, 'hash': meta['hash'], 'bytes': bytes, 'last_modified': last_modified, 'content_type': content_type})
         self.output_file_list(out)
 
     def do_get_object(self, account_name, container_name, object_name):
         """Handle object-level GET operations."""
-        c = self.conn.cursor()
-        c.execute('SELECT uuid, bytes, meta, last_modified, expires, user_meta FROM objects WHERE account = ? AND container = ? AND name = ? AND deleted = 0', (account_name, container_name, object_name))
-        res = c.fetchone()
+        res = self.conn.execute(sql.select([
+            sql.objects.c.uuid,
+            sql.objects.c.bytes,
+            sql.objects.c.meta,
+            sql.objects.c.last_modified,
+            sql.objects.c.expires,
+            sql.objects.c.user_meta
+        ]).where(
+            sql.objects.c.account == account_name
+        ).where(
+            sql.objects.c.container == container_name
+        ).where(
+            sql.objects.c.name == object_name
+        ).where(
+            sql.objects.c.deleted == False
+        )).fetchone()
         if not res:
             self.send_error(httplib.NOT_FOUND)
             return
@@ -285,9 +336,12 @@ class UnladenRequestHandler():
         if len(meta['disk_peers']) > 0:
             peer = random.choice(meta['disk_peers'])
         if peer:
-            c.execute('SELECT storage_url, token FROM cluster_peers WHERE peer = ?', (peer,))
-            res = c.fetchone()
-            (peer_storage_url, peer_token) = res
+            (peer_storage_url, peer_token) = self.conn.execute(sql.select([
+                sql.cluster_peers.c.storage_url,
+                sql.cluster_peers.c.token
+            ]).where(
+                sql.cluster_peers.c.peer == peer
+            )).fetchone()
             peer_url = urlparse.urlparse(peer_storage_url)
             if peer_url.scheme == 'https':
                 h = httplib.HTTPSConnection(peer_url.netloc, timeout=5)
@@ -320,9 +374,14 @@ class UnladenRequestHandler():
         if not fn_uuid:
             self.send_error(httplib.BAD_REQUEST)
             return
-        c = self.conn.cursor()
-        c.execute('SELECT bytes_disk, store, created, meta FROM files WHERE uuid = ?', (fn_uuid,))
-        res = c.fetchone()
+        res = self.conn.execute(sql.select([
+            sql.files.c.bytes_disk,
+            sql.files.c.store,
+            sql.files.c.created,
+            sql.files.c.meta
+        ]).where(
+            sql.files.c.uuid == fn_uuid
+        )).fetchone()
         if not res:
             self.send_error(httplib.NOT_FOUND)
             return
@@ -454,15 +513,36 @@ class UnladenRequestHandler():
         meta['hash'] = md5_hash
         meta_file['hash'] = md5_hash_file
         meta['disk_peers'] = []
-        c = self.conn.cursor()
-        c.execute('SELECT uuid FROM objects WHERE account = ? AND container = ? AND name = ? AND deleted = 0', (account_name, container_name, object_name))
-        res = c.fetchone()
+        res = self.conn.execute(sql.select([
+            sql.objects.c.uuid
+        ]).where(
+            sql.objects.c.account == account_name
+        ).where(
+            sql.objects.c.container == container_name
+        ).where(
+            sql.objects.c.name == object_name
+        ).where(
+            sql.objects.c.deleted == False
+        )).fetchone()
         if res:
             (old_fn_uuid,) = res
-            c.execute('UPDATE objects SET deleted = 1 WHERE uuid = ?', (old_fn_uuid,))
-            self.conn.commit()
-        c.execute('INSERT INTO objects (uuid, deleted, account, container, name, bytes, last_modified, expires, meta, user_meta) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', (fn_uuid, 0, account_name, container_name, object_name, length, last_modified, expires, json.dumps(meta), json.dumps(user_meta)))
-        self.conn.commit()
+            self.conn.execute(sql.objects.update().where(
+                sql.objects.c.uuid == old_fn_uuid
+            ).values(
+                deleted=1
+            ))
+        self.conn.execute(sql.objects.insert().values(
+            uuid=fn_uuid,
+            deleted=0,
+            account=account_name,
+            container=container_name,
+            name=object_name,
+            bytes=length,
+            last_modified=last_modified,
+            expires=expires,
+            meta=json.dumps(meta),
+            user_meta=json.dumps(user_meta)
+        ))
         self.http.send_response(httplib.CREATED)
         if 'content_type' in meta:
             self.http.send_header('Content-Type', meta['content_type'].encode('utf-8'))
@@ -493,9 +573,11 @@ class UnladenRequestHandler():
         except ValueError:
             self.send_error(httplib.BAD_REQUEST)
             return
-        c = self.conn.cursor()
-        c.execute('SELECT store FROM files WHERE uuid = ?', (fn_uuid,))
-        res = c.fetchone()
+        res = self.conn.execute(sql.select([
+            sql.files.c.store
+        ]).where(
+            sql.files.c.uuid == fn_uuid
+        )).fetchone()
         if res:
             self.send_error(httplib.CONFLICT)
             return
@@ -530,8 +612,14 @@ class UnladenRequestHandler():
                 self.send_error(httplib.CONFLICT)
                 return
         meta_file['hash'] = md5_hash_file
-        c.execute('INSERT INTO files (uuid, bytes_disk, store, uploader, created, meta) VALUES (?, ?, ?, ?, ?, ?)', (fn_uuid, bytes_disk, store, self.authenticated_account, now, json.dumps(meta_file)))
-        self.conn.commit()
+        self.conn.execute(sql.files.insert().values(
+            uuid=fn_uuid,
+            bytes_disk=bytes_disk,
+            store=store,
+            uploader=self.authenticated_account,
+            created=now,
+            meta=json.dumps(meta_file)
+        ))
         self.http.send_response(httplib.CREATED)
         self.http.send_header('Content-Length', 0)
         self.http.send_header('ETag', md5_hash_file)
@@ -551,9 +639,18 @@ class UnladenRequestHandler():
 
     def do_post_object(self, account_name, container_name, object_name):
         """Handle object-level POST operations."""
-        c = self.conn.cursor()
-        c.execute('SELECT uuid, expires FROM objects WHERE account = ? AND container = ? AND name = ? AND deleted = 0', (account_name, container_name, object_name))
-        res = c.fetchone()
+        res = self.conn.execute(sql.select([
+            sql.objects.c.uuid,
+            sql.objects.c.expires
+        ]).where(
+            sql.objects.c.account == account_name
+        ).where(
+            sql.objects.c.container == container_name
+        ).where(
+            sql.objects.c.name == object_name
+        ).where(
+            sql.objects.c.deleted == False
+        )).fetchone()
         if not res:
             self.send_error(httplib.NOT_FOUND)
             return
@@ -566,8 +663,12 @@ class UnladenRequestHandler():
             if header.lower().startswith('x-object-meta-'):
                 user_meta[header[14:]] = self.http.headers[header]
         last_modified = time.time()
-        c.execute('UPDATE objects SET user_meta = ?, last_modified = ? WHERE uuid = ?', (json.dumps(user_meta), last_modified, fn_uuid))
-        self.conn.commit()
+        self.conn.execute(sql.objects.update().where(
+            sql.objects.c.uuid == fn_uuid
+        ).values(
+            user_meta=json.dumps(user_meta),
+            last_modified=last_modified
+        ))
         self.http.send_response(httplib.NO_CONTENT)
         self.http.end_headers()
 
@@ -581,9 +682,15 @@ class UnladenRequestHandler():
 
     def do_delete_container(self, account_name, container_name):
         """Handle container-level DELETE operations."""
-        c = self.conn.cursor()
-        c.execute('SELECT COUNT(*) FROM objects WHERE account = ? AND container = ? AND deleted = 0', (account_name, container_name))
-        (objects,) = c.fetchone()
+        (objects,) = self.conn.execute(sql.select([
+            sql.count('*')
+        ]).where(
+            sql.objects.c.account == account_name
+        ).where(
+            sql.objects.c.container == container_name
+        ).where(
+            sql.objects.c.deleted == False
+        )).fetchone()
         if objects > 0:
             self.send_error(httplib.CONFLICT)
             return
@@ -592,15 +699,26 @@ class UnladenRequestHandler():
 
     def do_delete_object(self, account_name, container_name, object_name):
         """Handle object-level DELETE operations."""
-        c = self.conn.cursor()
-        c.execute('SELECT uuid FROM objects WHERE account = ? AND container = ? AND name = ? AND deleted = 0', (account_name, container_name, object_name))
-        res = c.fetchone()
+        res = self.conn.execute(sql.select([
+            sql.objects.c.uuid
+        ]).where(
+            sql.objects.c.account == account_name
+        ).where(
+            sql.objects.c.container == container_name
+        ).where(
+            sql.objects.c.name == object_name
+        ).where(
+            sql.objects.c.deleted == False
+        )).fetchone()
         if not res:
             self.send_error(httplib.NOT_FOUND)
             return
         (fn_uuid,) = res
-        c.execute('UPDATE objects SET deleted = 1 WHERE uuid = ?', (fn_uuid,))
-        self.conn.commit()
+        self.conn.execute(sql.objects.update().where(
+            sql.objects.c.uuid == fn_uuid
+        ).values(
+            deleted=1
+        ))
         self.http.send_response(httplib.NO_CONTENT)
         self.http.end_headers()
 
@@ -609,24 +727,31 @@ class UnladenRequestHandler():
         if len(self.http.server.config['stores']) == 0:
             self.send_error(httplib.BAD_REQUEST)
             return
-        c = self.conn.cursor()
-        c.execute('SELECT store FROM files WHERE uuid = ?', (fn_uuid,))
-        res = c.fetchone()
+        res = self.conn.execute(sql.select([
+            sql.files.c.store
+        ]).where(
+            sql.files.c.uuid == fn_uuid
+        )).fetchone()
         if not res:
             self.send_error(httplib.NOT_FOUND)
             return
         (store,) = res
         store_dir = self.http.server.config['stores'][store]['directory']
-        c.execute('DELETE FROM files WHERE uuid = ?', (fn_uuid,))
+        self.conn.execute(sql.files.delete().where(
+            sql.files.c.uuid == fn_uuid
+        ))
         os.remove(os.path.join(store_dir, fn_uuid[0:2], fn_uuid[2:4], fn_uuid))
-        self.conn.commit()
         self.http.send_response(httplib.NO_CONTENT)
         self.http.end_headers()
 
     def authenticate_token(self, user_token):
-        c = self.conn.cursor()
-        c.execute('SELECT account FROM tokens_cache WHERE id = ? AND expires > ?', (user_token, time.time()))
-        res = c.fetchone()
+        res = self.conn.execute(sql.select([
+            sql.tokens_cache.c.account
+        ]).where(
+            sql.tokens_cache.c.id == user_token
+        ).where(
+            sql.tokens_cache.c.expires > time.time()
+        )).fetchone()
         if not res:
             return False
         (token_account,) = res

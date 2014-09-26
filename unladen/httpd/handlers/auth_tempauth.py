@@ -19,7 +19,7 @@
 
 import uuid
 import httplib
-import sqlite3
+import unladen.sql as sql
 import os
 import time
 import unladen.utils.passwords
@@ -29,7 +29,8 @@ class UnladenRequestHandler():
     def __init__(self, http):
         self.http = http
         self.data_dir = self.http.server.config['data_dir']
-        self.conn = sqlite3.connect(os.path.join(self.data_dir, 'catalog.sqlite'))
+        engine = sql.create_engine('sqlite:///%s' % os.path.join(self.data_dir, 'catalog.sqlite'), echo=self.http.server.config['debug'])
+        self.conn = engine.connect()
 
     def process_request(self, reqpath):
         """Process Version 1.0 TempAuth commands."""
@@ -44,11 +45,14 @@ class UnladenRequestHandler():
         if not 'x-auth-user' in self.http.headers:
             self.http.send_error(httplib.BAD_REQUEST)
             return True
-        c = self.conn.cursor()
         username = self.http.headers['x-auth-user']
         password = self.http.headers['x-auth-key']
-        c.execute('SELECT account, password FROM tempauth_users WHERE username = ?', (username,))
-        res = c.fetchone()
+        res = self.conn.execute(sql.select([
+            sql.tempauth_users.c.account,
+            sql.tempauth_users.c.password
+        ]).where(
+            sql.tempauth_users.c.username == username
+        )).fetchone()
         if not res:
             self.http.send_error(httplib.UNAUTHORIZED)
             return True
@@ -60,8 +64,12 @@ class UnladenRequestHandler():
         expires = int(time.time() + 86400)
         # Since this is a local provider, we cheat a bit and just add
         # the token directly to tokens_cache.
-        c.execute('INSERT INTO tokens_cache (id, account, expires, source) VALUES (?, ?, ?, ?)', (token, account_name, expires, 'auth_tempauth'))
-        self.conn.commit()
+        self.conn.execute(sql.tokens_cache.insert().values(
+            id=token,
+            account=account_name,
+            expires=expires,
+            source='auth_tempauth'
+        ))
         self.http.send_response(httplib.NO_CONTENT)
         storage_url = self.http.server.config['auth_tempauth']['storage_url']
         self.http.send_header('X-Storage-Url', '%s/%s' % (storage_url, account_name))

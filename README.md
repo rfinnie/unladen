@@ -33,7 +33,7 @@ Server Usage
 
 Debian/Ubuntu system assumed -- adjust as necessary for your OS.
 
-    $ sudo apt-get install python-crypto sqlite3
+    $ sudo apt-get install python-crypto python-sqlalchemy sqlite3
     $ mkdir -p ~/.unladen/var
     $ sqlite3 ~/.unladen/var/catalog.sqlite <schema.sqlite3.sql
     $ sqlite3 ~/.unladen/var/catalog.sqlite <sample.sqlite3.sql
