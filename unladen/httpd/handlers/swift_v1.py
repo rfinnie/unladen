@@ -177,7 +177,7 @@ class UnladenRequestHandler():
             sql.count('*'),
             sql.sum(sql.files.c.bytes_disk)
         ]).where(
-            sql.objects.c.uploader == self.authenticated_account
+            sql.files.c.uploader == self.authenticated_account
         )).fetchone()
         if not bytes:
             bytes = 0
