@@ -319,7 +319,7 @@ class UnladenMaint():
         self.conn.execute(sql.objects.update().where(
             sql.objects.c.expires <= now
         ).values(
-            deleted=1
+            deleted=True
         ))
         print 'Marked expired objects as deleted'
 

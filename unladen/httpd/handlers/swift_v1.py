@@ -528,11 +528,11 @@ class UnladenRequestHandler():
             self.conn.execute(sql.objects.update().where(
                 sql.objects.c.uuid == old_fn_uuid
             ).values(
-                deleted=1
+                deleted=True
             ))
         self.conn.execute(sql.objects.insert().values(
             uuid=fn_uuid,
-            deleted=0,
+            deleted=False,
             account=account_name,
             container=container_name,
             name=object_name,
@@ -716,7 +716,7 @@ class UnladenRequestHandler():
         self.conn.execute(sql.objects.update().where(
             sql.objects.c.uuid == fn_uuid
         ).values(
-            deleted=1
+            deleted=True
         ))
         self.http.send_response(httplib.NO_CONTENT)
         self.http.end_headers()
