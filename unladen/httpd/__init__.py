@@ -76,6 +76,12 @@ class UnladenHTTPHandler(BaseHTTPServer.BaseHTTPRequestHandler):
             self.client_address = (ip, self.client_address[1])
             break
 
+    def process_ipv6_normalize(self):
+        if self.server.address_family == SocketServer.socket.AF_INET:
+            return
+        if self.client_address[0].startswith('::ffff:'):
+            self.client_address = (self.client_address[0][7:], self.client_address[1])
+
     def process_command(self):
         self.url = urlparse.urlparse(self.path)
         self.reqpath = urllib.unquote(self.url.path).decode('utf-8')
@@ -85,6 +91,7 @@ class UnladenHTTPHandler(BaseHTTPServer.BaseHTTPRequestHandler):
         for n in q:
             self.query[n.decode('utf-8')] = [y.decode('utf-8') for y in q[n]]
 
+        self.process_ipv6_normalize()
         self.process_xff()
 
         if self.server.config['debug']:
