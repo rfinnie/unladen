@@ -28,8 +28,7 @@ import unladen.utils.passwords
 class UnladenRequestHandler():
     def __init__(self, http):
         self.http = http
-        self.data_dir = self.http.server.config['data_dir']
-        engine = sql.create_engine('sqlite:///%s' % os.path.join(self.data_dir, 'catalog.sqlite'), echo=self.http.server.config['debug'])
+        engine = sql.create_engine(self.http.server.config['database']['url'], echo=self.http.server.config['debug'])
         self.conn = engine.connect()
 
     def process_request(self, reqpath):

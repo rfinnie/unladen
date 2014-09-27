@@ -39,6 +39,9 @@ DEFAULT_CONFIG = {
     'node_id': platform.node(),
     'stores': {},
     'peers': {},
+    'database': {
+        'url': None
+    },
     'httpd': {
         'handlers': ['auth_tempauth', 'swift_v1', 'status'],
         'listen': {
@@ -117,5 +120,8 @@ def get_config(config_dir='', config_cl={}):
             raise Exception('"directory" not specified for store "%s"' % store)
         if not 'size' in config['stores'][store]:
             config['stores'][store]['size'] = 10000000000
+
+    if not config['database']['url']:
+        config['database']['url'] = 'sqlite:///%s' % os.path.join(config['data_dir'], 'catalog.sqlite')
 
     return config

@@ -36,8 +36,7 @@ class UnladenRequestHandler():
 
     def __init__(self, http):
         self.http = http
-        self.data_dir = self.http.server.config['data_dir']
-        engine = sql.create_engine('sqlite:///%s' % os.path.join(self.data_dir, 'catalog.sqlite'), echo=self.http.server.config['debug'])
+        engine = sql.create_engine(self.http.server.config['database']['url'], echo=self.http.server.config['debug'])
         self.conn = engine.connect()
 
     def send_error(self, code, message=None):
@@ -124,7 +123,7 @@ class UnladenRequestHandler():
         weighted = []
         tp = 0
         for (k, v) in m.iteritems():
-            tp = tp + (float(v) / total)
+            tp = tp + (float(v) / float(total))
             weighted.append((k, tp))
         r = random.random()
         for (k, v) in weighted:
@@ -217,7 +216,7 @@ class UnladenRequestHandler():
         ).where(
             sql.objects.c.deleted == False
         ).group_by(sql.objects.c.container)):
-            out.append({'name': container_name, 'count': count, 'bytes': bytes})
+            out.append({'name': container_name, 'count': int(count), 'bytes': int(bytes)})
         self.output_file_list(out)
 
     def do_get_container(self, account_name, container_name):
@@ -248,7 +247,7 @@ class UnladenRequestHandler():
             content_type = 'application/octet-stream'
             if 'content_type' in meta:
                 content_type = meta['content_type']
-            out.append({'name': name, 'hash': meta['hash'], 'bytes': bytes, 'last_modified': last_modified, 'content_type': content_type})
+            out.append({'name': name, 'hash': meta['hash'], 'bytes': int(bytes), 'last_modified': float(last_modified), 'content_type': content_type})
         if len(out) == 0:
             self.send_error(httplib.NOT_FOUND)
             return
@@ -273,7 +272,7 @@ class UnladenRequestHandler():
             else:
                 meta = {}
             content_type = 'application/octet-stream'
-            out.append({'name': fn_uuid, 'hash': meta['hash'], 'bytes': bytes, 'last_modified': last_modified, 'content_type': content_type})
+            out.append({'name': fn_uuid, 'hash': meta['hash'], 'bytes': int(bytes), 'last_modified': float(last_modified), 'content_type': content_type})
         self.output_file_list(out)
 
     def do_get_object(self, account_name, container_name, object_name):

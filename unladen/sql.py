@@ -21,6 +21,7 @@ import sqlalchemy
 
 create_engine = sqlalchemy.create_engine
 distinct = sqlalchemy.distinct
+desc = sqlalchemy.desc
 select = sqlalchemy.sql.select
 count = sqlalchemy.func.count
 sum = sqlalchemy.func.sum

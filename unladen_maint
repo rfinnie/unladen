@@ -20,7 +20,7 @@
 import sys
 import unladen.config
 import getopt
-import sqlite3
+import unladen.sql as sql
 import os
 import shutil
 import random
@@ -38,8 +38,8 @@ class UnladenMaint():
 
     def __init__(self, config):
         self.config = config
-        self.data_dir = self.config['data_dir']
-        self.conn = sqlite3.connect(os.path.join(self.data_dir, 'catalog.sqlite'))
+        engine = sql.create_engine(self.config['database']['url'], echo=self.config['debug'])
+        self.conn = engine.connect()
 
     def random_weighted(self, m):
         """Return a weighted random key."""
@@ -47,7 +47,7 @@ class UnladenMaint():
         weighted = []
         tp = 0
         for (k, v) in m.iteritems():
-            tp = tp + (float(v) / total)
+            tp = tp + (float(v) / float(total))
             weighted.append((k, tp))
         r = random.random()
         for (k, v) in weighted:
@@ -80,26 +80,33 @@ class UnladenMaint():
         return out
 
     def clean_tokens_cache(self):
-        c = self.conn.cursor()
         time_target = time.time() - 3600
-        c.execute('DELETE FROM tokens_cache WHERE expires < ?', (time_target,))
-        self.conn.commit()
+        self.conn.execute(sql.tokens_cache.delete().where(
+            sql.tokens_cache.c.expires < time_target
+        ))
         print 'Deleted expired tokens'
 
     def peers_maint(self):
-        c = self.conn.cursor()
         self.cluster_peers_cache = {}
-        c.execute('SELECT peer, peer_updated, storage_url, token, token_expires, total_size, used_size FROM cluster_peers', ())
         sql_peers = {}
         todelete = []
-        for (peer, peer_updated, storage_url, token, token_expires, total_size, used_size) in c.fetchall():
+        for (peer, peer_updated, storage_url, token, token_expires, total_size, used_size) in self.conn.execute(sql.select([
+            sql.cluster_peers.c.peer,
+            sql.cluster_peers.c.peer_updated,
+            sql.cluster_peers.c.storage_url,
+            sql.cluster_peers.c.token,
+            sql.cluster_peers.c.token_expires,
+            sql.cluster_peers.c.total_size,
+            sql.cluster_peers.c.used_size
+        ])):
             if peer not in self.config['peers']:
                 todelete.append(peer)
                 continue
             sql_peers[peer] = (peer_updated, storage_url, token, token_expires, total_size, used_size)
         for peer in todelete:
-            c.execute('DELETE FROM cluster_peers WHERE peer = ?', (peer,))
-        self.conn.commit()
+            self.conn.execute(sql.cluster_peers.delete().where(
+                sql.cluster_peers.c.peer == peer
+            ))
         for peer in self.config['peers']:
             if peer in sql_peers:
                 (peer_updated, storage_url, token, token_expires, total_size, used_size) = sql_peers[peer]
@@ -134,22 +141,41 @@ class UnladenMaint():
             total_size = int(res.getheader('x-unladen-node-capacity'))
             used_size = int(res.getheader('x-container-bytes-used'))
             if peer in sql_peers:
-                c.execute('UPDATE cluster_peers SET peer_updated = ?, storage_url = ?, token = ?, token_expires = ?, total_size = ?, used_size = ? WHERE peer = ?', (now, storage_url, token, token_expires, total_size, used_size, peer))
+                self.conn.execute(sql.cluster_peers.update().where(
+                    sql.cluster_peers.c.peer == peer
+                ).values(
+                    peer_updated=now,
+                    storage_url=storage_url,
+                    token=token,
+                    token_expires=token_expires,
+                    total_size=total_size,
+                    used_size=used_size
+                ))
             else:
-                c.execute('INSERT INTO cluster_peers (peer, peer_updated, storage_url, token, token_expires, total_size, used_size) VALUES (?, ?, ?, ?, ?, ?, ?)', (peer, now, storage_url, token, token_expires, total_size, used_size))
+                self.conn.execute(sql.cluster_peers.insert().values(
+                    peer=peer,
+                    peer_updated=now,
+                    storage_url=storage_url,
+                    token=token,
+                    token_expires=token_expires,
+                    total_size=total_size,
+                    used_size=used_size
+                ))
             self.cluster_peers_cache[peer] = (peer_updated, storage_url, token, token_expires, total_size, used_size)
-            self.conn.commit()
 
     def object_replication(self):
-        c = self.conn.cursor()
         peer_weights = {}
         for peer in self.cluster_peers_cache:
             (peer_updated, storage_url, token, token_expires, total_size, used_size) = self.cluster_peers_cache[peer]
             peer_weights[peer] = total_size
         toadd = []
         todel = []
-        c.execute('SELECT uuid, meta from objects', ())
-        for (fn_uuid, meta) in c.fetchall():
+        for (fn_uuid, meta) in self.conn.execute(sql.select([
+            sql.objects.c.uuid,
+            sql.objects.c.meta
+        ]).where(
+            sql.objects.c.deleted == False
+        )):
             meta = json.loads(meta)
             existing_peers = []
             for peer in meta['disk_peers']:
@@ -175,13 +201,18 @@ class UnladenMaint():
                 time.sleep(0.5)
             print 'All threads done.'
             for (fn_uuid, peer, existing_peers) in toadd:
-                c.execute('SELECT meta FROM objects WHERE uuid = ?', (fn_uuid,))
-                res = c.fetchone()
-                (meta,) = res
+                (meta,) = self.conn.execute(sql.select([
+                    sql.objects.c.meta
+                ]).where(
+                    sql.objects.c.uuid == fn_uuid
+                )).fetchone()
                 meta = json.loads(meta)
                 meta['disk_peers'].append(peer)
-                c.execute('UPDATE objects SET meta = ? WHERE uuid = ?', (json.dumps(meta), fn_uuid))
-                self.conn.commit()
+                self.conn.execute(sql.objects.update().where(
+                    sql.objects.c.uuid == fn_uuid
+                ).values(
+                    meta=json.dumps(meta)
+                ))
                 if not fn_uuid in staging_delete:
                     staging_delete.append(fn_uuid)
 
@@ -198,13 +229,18 @@ class UnladenMaint():
                 time.sleep(0.5)
             print 'All threads done.'
             for (fn_uuid, peer) in todel:
-                c.execute('SELECT meta FROM objects WHERE uuid = ?', (fn_uuid,))
-                res = c.fetchone()
-                (meta,) = res
+                (meta,) = self.conn.execute(sql.select([
+                    sql.objects.c.meta
+                ]).where(
+                    sql.objects.c.uuid == fn_uuid
+                )).fetchone()
                 meta = json.loads(meta)
                 meta['disk_peers'].remove(peer)
-                c.execute('UPDATE objects SET meta = ? WHERE uuid = ?', (json.dumps(meta), fn_uuid))
-                self.conn.commit()
+                self.conn.execute(sql.objects.update().where(
+                    sql.objects.c.uuid == fn_uuid
+                ).values(
+                    meta=json.dumps(meta)
+                ))
 
         for fn_uuid in staging_delete:
             contentdir = os.path.join(self.config['staging_files_dir'], fn_uuid[0:2], fn_uuid[2:4])
@@ -279,17 +315,22 @@ class UnladenMaint():
             self.sema.release()
 
     def delete_expired_objects(self):
-        c = self.conn.cursor()
         now = time.time()
-        c.execute('UPDATE objects SET deleted = 1 WHERE expires <= ?', (now,))
-        self.conn.commit()
+        self.conn.execute(sql.objects.update().where(
+            sql.objects.c.expires <= now
+        ).values(
+            deleted=1
+        ))
         print 'Marked expired objects as deleted'
 
     def purge_deleted_objects(self):
-        c = self.conn.cursor()
-        c.execute('SELECT uuid, meta FROM objects WHERE deleted = 1', ())
         to_purge = []
-        for (fn_uuid, meta) in c.fetchall():
+        for (fn_uuid, meta) in self.conn.execute(sql.select([
+            sql.objects.c.uuid,
+            sql.objects.c.meta
+        ]).where(
+            sql.objects.c.deleted == True
+        )):
             meta = json.loads(meta)
             to_purge.append((fn_uuid, meta))
         if len(to_purge) > 0:
@@ -306,8 +347,9 @@ class UnladenMaint():
                 time.sleep(0.5)
             print 'All threads done.'
             for (fn_uuid, meta) in to_purge:
-                c.execute('DELETE FROM objects WHERE uuid = ?', (fn_uuid,))
-                self.conn.commit()
+                self.conn.execute(sql.objects.delete().where(
+                    sql.objects.c.uuid == fn_uuid
+                ))
                 contentdir = os.path.join(self.config['staging_files_dir'], fn_uuid[0:2], fn_uuid[2:4])
                 if os.path.isfile(os.path.join(contentdir, fn_uuid)):
                     os.remove(os.path.join(contentdir, fn_uuid))
@@ -331,12 +373,14 @@ class UnladenMaint():
                 self.sema.release()
 
     def check_store_balance(self):
-        c = self.conn.cursor()
-        c.execute('SELECT store, COUNT(*), SUM(bytes_disk) FROM files GROUP BY store', ())
         store_stats = {}
         total_bytes = 0
         total_objects = 0
-        for (store, objects, bytes) in c.fetchall():
+        for (store, objects, bytes) in self.conn.execute(sql.select([
+            sql.files.c.store,
+            sql.count('*'),
+            sql.sum(sql.files.c.bytes_disk)
+        ]).group_by(sql.files.c.store)):
             total_bytes = total_bytes + bytes
             total_objects = total_objects + objects
             store_stats[store] = (objects, bytes)
@@ -354,12 +398,12 @@ class UnladenMaint():
                 (objects, bytes) = store_stats[store]
             else:
                 (objects, bytes) = (0, 0)
-            objects_pct = float(objects) / total_objects
-            bytes_pct = float(bytes) / total_bytes
-            config_pct = float(self.config['stores'][store]['size']) / total_config_bytes
+            objects_pct = float(objects) / float(total_objects)
+            bytes_pct = float(bytes) / float(total_bytes)
+            config_pct = float(self.config['stores'][store]['size']) / float(total_config_bytes)
             config_pct_delta = bytes_pct - config_pct
             print '%s: %d objects (%0.02f%%), %d bytes (%0.02f%%, %0.02f%% from config)' % (store, objects, objects_pct * 100.0, bytes, bytes_pct * 100.0, config_pct_delta * 100.0)
-            should_have = int(total_bytes * config_pct)
+            should_have = int(float(total_bytes) * config_pct)
             print '    Should have %d bytes' % should_have
             transfer = bytes - should_have
             transfer_d[store] = transfer
@@ -384,17 +428,23 @@ class UnladenMaint():
             for store_to in transfer_d:
                 if transfer_d[store_to] > 0:
                     continue
-                x = int(float(abs(transfer_d[store_to])) / total_transfer_in * transfer_d[store_from])
+                x = int(float(abs(transfer_d[store_to])) / float(total_transfer_in) * float(transfer_d[store_from]))
                 print 'Transfer %d bytes from %s to %s' % (x, store_from, store_to)
                 if x > 0:
                     stores_transfer_to[store_to] = x
             bytes_left = x
-            c.execute('SELECT uuid, bytes_disk FROM files WHERE store = ? ORDER BY RANDOM()', (store_from,))
-            for (fn_uuid, bytes) in c.fetchall():
+            for (fn_uuid, bytes) in self.conn.execute(sql.select([
+                sql.files.c.uuid,
+                sql.files.c.bytes_disk
+            ]).where(
+                sql.files.c.store == store_from
+            ).order_by(
+                sql.desc(sql.files.c.bytes_disk)
+            )):
                 store_to = None
                 bytes_left = 0
                 for store_to_candidate in stores_transfer_to:
-                    if float(bytes) / stores_transfer_to[store_to_candidate] < 1.05:
+                    if float(bytes) / float(stores_transfer_to[store_to_candidate]) < 1.05:
                         store_to = store_to_candidate
                         bytes_left = stores_transfer_to[store_to_candidate]
                         break
@@ -421,8 +471,11 @@ class UnladenMaint():
             if not os.path.isdir(contentdir_to):
                 os.makedirs(contentdir_to)
             shutil.copy(os.path.join(contentdir_from, fn_uuid), os.path.join(contentdir_to, fn_uuid))
-            c.execute('UPDATE files SET store = ? WHERE uuid = ?', (store_to, fn_uuid))
-            self.conn.commit()
+            self.conn.execute(sql.files.update().where(
+                sql.files.c.uuid == fn_uuid
+            ).values(
+                store=store_to
+            ))
             os.remove(os.path.join(contentdir_from, fn_uuid))
 
 
@@ -471,7 +524,7 @@ def main():
             last_check_store_balance = time.time()
         if time.time() > (last_object_replication + 3):
             maint.object_replication()
-            last_replication_thingy = time.time()
+            last_object_replication = time.time()
         time.sleep(1)
 
 
