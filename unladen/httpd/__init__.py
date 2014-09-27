@@ -90,7 +90,7 @@ class UnladenHTTPHandler(BaseHTTPServer.BaseHTTPRequestHandler):
         if self.server.config['debug']:
             self.dump_req()
 
-        self.sql_conn = self.server.sql_engine.connect()
+        self.sql_conn = sql.UnladenSqlConn(self.server.sql_engine)
         for handler_name in self.server.config['httpd']['handlers']:
             if handler_name in self.handler_modules:
                 handler_module = self.handler_modules['handler_name']

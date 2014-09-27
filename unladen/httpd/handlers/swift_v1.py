@@ -352,6 +352,7 @@ class UnladenRequestHandler():
         else:
             contentdir = os.path.join(self.http.server.config['staging_files_dir'], fn_uuid[0:2], fn_uuid[2:4])
             r = open(os.path.join(contentdir, fn_uuid), 'rb')
+        self.conn.close()
         if not cipher:
             iv = r.read(block_size)
             cipher = Crypto.Cipher.AES.new(aes_key, Crypto.Cipher.AES.MODE_CFB, iv)
@@ -386,6 +387,7 @@ class UnladenRequestHandler():
         (length, store, last_modified, meta) = res
         meta = json.loads(meta)
         store_dir = self.http.server.config['stores'][store]['directory']
+        self.conn.close()
         self.http.send_response(httplib.OK)
         self.http.send_header('Content-Type', 'application/octet-stream')
         self.http.send_header('Content-Length', length)
@@ -580,6 +582,7 @@ class UnladenRequestHandler():
         if res:
             self.send_error(httplib.CONFLICT)
             return
+        self.conn.close()
         now = time.time()
         meta_file = {}
         store = self.choose_store()

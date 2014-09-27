@@ -19,6 +19,40 @@
 
 import sqlalchemy
 
+
+class UnladenSqlConn():
+    conn = None
+
+    def __init__(self, engine):
+        self.engine = engine
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, type, value, traceback):
+        self.close()
+
+    def _want_connected(self):
+        if self.conn:
+            if self.conn.closed:
+                self.conn = self.engine.connect()
+        else:
+            self.conn = self.engine.connect()
+
+    def execute(self, statement, *multiparams, **params):
+        self._want_connected()
+        return self.conn.execute(statement, *multiparams, **params)
+
+    def begin(self):
+        self._want_connected()
+        return self.conn.begin()
+
+    def close(self):
+        if self.conn and not self.conn.closed:
+            self.conn.close()
+        self.conn = None
+
+
 create_engine = sqlalchemy.create_engine
 distinct = sqlalchemy.distinct
 desc = sqlalchemy.desc
