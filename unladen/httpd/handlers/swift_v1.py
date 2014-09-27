@@ -36,8 +36,7 @@ class UnladenRequestHandler():
 
     def __init__(self, http):
         self.http = http
-        engine = sql.create_engine(self.http.server.config['database']['url'], echo=self.http.server.config['debug'])
-        self.conn = engine.connect()
+        self.conn = self.http.sql_conn
 
     def send_error(self, code, message=None):
         """Return a (possibly formatted) error.
@@ -523,25 +522,26 @@ class UnladenRequestHandler():
         ).where(
             sql.objects.c.deleted == False
         )).fetchone()
-        if res:
-            (old_fn_uuid,) = res
-            self.conn.execute(sql.objects.update().where(
-                sql.objects.c.uuid == old_fn_uuid
-            ).values(
-                deleted=True
+        with self.conn.begin():
+            if res:
+                (old_fn_uuid,) = res
+                self.conn.execute(sql.objects.update().where(
+                    sql.objects.c.uuid == old_fn_uuid
+                ).values(
+                    deleted=True
+                ))
+            self.conn.execute(sql.objects.insert().values(
+                uuid=fn_uuid,
+                deleted=False,
+                account=account_name,
+                container=container_name,
+                name=object_name,
+                bytes=length,
+                last_modified=last_modified,
+                expires=expires,
+                meta=json.dumps(meta),
+                user_meta=json.dumps(user_meta)
             ))
-        self.conn.execute(sql.objects.insert().values(
-            uuid=fn_uuid,
-            deleted=False,
-            account=account_name,
-            container=container_name,
-            name=object_name,
-            bytes=length,
-            last_modified=last_modified,
-            expires=expires,
-            meta=json.dumps(meta),
-            user_meta=json.dumps(user_meta)
-        ))
         self.http.send_response(httplib.CREATED)
         if 'content_type' in meta:
             self.http.send_header('Content-Type', meta['content_type'].encode('utf-8'))
@@ -611,14 +611,15 @@ class UnladenRequestHandler():
                 self.send_error(httplib.CONFLICT)
                 return
         meta_file['hash'] = md5_hash_file
-        self.conn.execute(sql.files.insert().values(
-            uuid=fn_uuid,
-            bytes_disk=bytes_disk,
-            store=store,
-            uploader=self.authenticated_account,
-            created=now,
-            meta=json.dumps(meta_file)
-        ))
+        with self.conn.begin():
+            self.conn.execute(sql.files.insert().values(
+                uuid=fn_uuid,
+                bytes_disk=bytes_disk,
+                store=store,
+                uploader=self.authenticated_account,
+                created=now,
+                meta=json.dumps(meta_file)
+            ))
         self.http.send_response(httplib.CREATED)
         self.http.send_header('Content-Length', 0)
         self.http.send_header('ETag', md5_hash_file)
@@ -662,12 +663,13 @@ class UnladenRequestHandler():
             if header.lower().startswith('x-object-meta-'):
                 user_meta[header[14:]] = self.http.headers[header]
         last_modified = time.time()
-        self.conn.execute(sql.objects.update().where(
-            sql.objects.c.uuid == fn_uuid
-        ).values(
-            user_meta=json.dumps(user_meta),
-            last_modified=last_modified
-        ))
+        with self.conn.begin():
+            self.conn.execute(sql.objects.update().where(
+                sql.objects.c.uuid == fn_uuid
+            ).values(
+                user_meta=json.dumps(user_meta),
+                last_modified=last_modified
+            ))
         self.http.send_response(httplib.NO_CONTENT)
         self.http.end_headers()
 
@@ -713,11 +715,12 @@ class UnladenRequestHandler():
             self.send_error(httplib.NOT_FOUND)
             return
         (fn_uuid,) = res
-        self.conn.execute(sql.objects.update().where(
-            sql.objects.c.uuid == fn_uuid
-        ).values(
-            deleted=True
-        ))
+        with self.conn.begin():
+            self.conn.execute(sql.objects.update().where(
+                sql.objects.c.uuid == fn_uuid
+            ).values(
+                deleted=True
+            ))
         self.http.send_response(httplib.NO_CONTENT)
         self.http.end_headers()
 
@@ -736,9 +739,10 @@ class UnladenRequestHandler():
             return
         (store,) = res
         store_dir = self.http.server.config['stores'][store]['directory']
-        self.conn.execute(sql.files.delete().where(
-            sql.files.c.uuid == fn_uuid
-        ))
+        with self.conn.begin():
+            self.conn.execute(sql.files.delete().where(
+                sql.files.c.uuid == fn_uuid
+            ))
         os.remove(os.path.join(store_dir, fn_uuid[0:2], fn_uuid[2:4], fn_uuid))
         self.http.send_response(httplib.NO_CONTENT)
         self.http.end_headers()

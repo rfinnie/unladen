@@ -25,6 +25,7 @@ import threading
 import httplib
 import traceback
 import ssl
+import unladen.sql as sql
 
 
 class UnladenHTTPHandler(BaseHTTPServer.BaseHTTPRequestHandler):
@@ -36,7 +37,7 @@ class UnladenHTTPHandler(BaseHTTPServer.BaseHTTPRequestHandler):
     # codes 1xx, 204, and 304.
     protocol_version = 'HTTP/1.1'
 
-    handler_instances = {}
+    handler_modules = {}
 
     def dump_req(self):
         print '========================================'
@@ -89,27 +90,26 @@ class UnladenHTTPHandler(BaseHTTPServer.BaseHTTPRequestHandler):
         if self.server.config['debug']:
             self.dump_req()
 
+        self.sql_conn = self.server.sql_engine.connect()
         for handler_name in self.server.config['httpd']['handlers']:
-            if handler_name in self.handler_instances:
-                handler_instance = self.handler_instances['handler_name']
+            if handler_name in self.handler_modules:
+                handler_module = self.handler_modules['handler_name']
             else:
-                try:
-                    handler_module = __import__('unladen.httpd.handlers.%s' % handler_name, fromlist=['unladen.httpd.handlers'])
-                    handler_instance = handler_module.UnladenRequestHandler(self)
-                except Exception, err:
-                    print traceback.format_exc()
-                    self.send_error(httplib.INTERNAL_SERVER_ERROR, err.message)
-                    return
-                self.handler_instances['handler_name'] = handler_instance
+                handler_module = __import__('unladen.httpd.handlers.%s' % handler_name, fromlist=['unladen.httpd.handlers'])
+                self.handler_modules['handler_name'] = handler_module
             handler_claimed = False
             try:
+                handler_instance = handler_module.UnladenRequestHandler(self)
                 handler_claimed = handler_instance.process_request(self.reqpath)
             except Exception, err:
                 print traceback.format_exc()
                 self.send_error(httplib.INTERNAL_SERVER_ERROR, err.message)
+                self.sql_conn.close()
                 return
             if handler_claimed:
+                self.sql_conn.close()
                 return
+        self.sql_conn.close()
 
         self.send_error(httplib.BAD_REQUEST)
 
@@ -139,6 +139,7 @@ class UnladenHTTPServer(SocketServer.ThreadingMixIn, BaseHTTPServer.HTTPServer):
         BaseHTTPServer.HTTPServer.__init__(self, *args)
         if config['httpd']['listen']['ssl']:
             self.socket = ssl.wrap_socket(self.socket, keyfile=config['httpd']['listen']['ssl_key'], certfile=config['httpd']['listen']['ssl_cert'], server_side=True)
+        self.sql_engine = sql.create_engine(config['database']['url'], echo=config['debug'])
 
 
 def run(config):

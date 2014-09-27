@@ -433,14 +433,15 @@ class UnladenMaint():
                 if x > 0:
                     stores_transfer_to[store_to] = x
             bytes_left = x
-            for (fn_uuid, bytes) in self.conn.execute(sql.select([
+            res = self.conn.execute(sql.select([
                 sql.files.c.uuid,
                 sql.files.c.bytes_disk
             ]).where(
                 sql.files.c.store == store_from
             ).order_by(
                 sql.desc(sql.files.c.bytes_disk)
-            )):
+            ))
+            for (fn_uuid, bytes) in res:
                 store_to = None
                 bytes_left = 0
                 for store_to_candidate in stores_transfer_to:
@@ -458,6 +459,7 @@ class UnladenMaint():
                 else:
                     stores_transfer_to[store_to] = bytes_left
                 if len(stores_transfer_to) == 0:
+                    res.close()
                     break
         print ''
         print ''

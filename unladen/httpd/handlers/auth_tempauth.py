@@ -28,8 +28,7 @@ import unladen.utils.passwords
 class UnladenRequestHandler():
     def __init__(self, http):
         self.http = http
-        engine = sql.create_engine(self.http.server.config['database']['url'], echo=self.http.server.config['debug'])
-        self.conn = engine.connect()
+        self.conn = self.http.sql_conn
 
     def process_request(self, reqpath):
         """Process Version 1.0 TempAuth commands."""
@@ -63,12 +62,13 @@ class UnladenRequestHandler():
         expires = int(time.time() + 86400)
         # Since this is a local provider, we cheat a bit and just add
         # the token directly to tokens_cache.
-        self.conn.execute(sql.tokens_cache.insert().values(
-            id=token,
-            account=account_name,
-            expires=expires,
-            source='auth_tempauth'
-        ))
+        with self.conn.begin():
+            self.conn.execute(sql.tokens_cache.insert().values(
+                id=token,
+                account=account_name,
+                expires=expires,
+                source='auth_tempauth'
+            ))
         self.http.send_response(httplib.NO_CONTENT)
         storage_url = self.http.server.config['auth_tempauth']['storage_url']
         self.http.send_header('X-Storage-Url', '%s/%s' % (storage_url, account_name))
