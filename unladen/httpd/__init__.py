@@ -23,9 +23,11 @@ import urlparse
 import urllib
 import threading
 import httplib
-import traceback
 import ssl
 import unladen.sql as sql
+import unladen.config
+import getopt
+import logging
 
 
 class UnladenHTTPHandler(BaseHTTPServer.BaseHTTPRequestHandler):
@@ -38,16 +40,16 @@ class UnladenHTTPHandler(BaseHTTPServer.BaseHTTPRequestHandler):
     protocol_version = 'HTTP/1.1'
 
     handler_modules = {}
+    logger = logging.getLogger(__name__)
 
     def dump_req(self):
-        print '========================================'
-        print 'Thread: %s (%d total)' % (repr(threading.current_thread()), len(threading.enumerate()))
-        print 'Command: %s' % self.command
-        print 'URL: %s' % repr(self.url)
-        print 'Processed path: %s' % self.reqpath
-        print 'Query items: %s' % repr(self.query)
-        print 'Headers: %s' % repr(self.headers.dict)
-        print '========================================'
+        self.logger.debug('Request:')
+        self.logger.debug('    Thread: %s (%d total)' % (repr(threading.current_thread()), len(threading.enumerate())))
+        self.logger.debug('    Command: %s' % self.command)
+        self.logger.debug('    URL: %s' % repr(self.url))
+        self.logger.debug('    Processed path: %s' % self.reqpath)
+        self.logger.debug('    Query items: %s' % repr(self.query))
+        self.logger.debug('    Headers: %s' % repr(self.headers.dict))
 
     def log_request(self, code='-', size='-'):
         """Log an accepted request."""
@@ -93,9 +95,7 @@ class UnladenHTTPHandler(BaseHTTPServer.BaseHTTPRequestHandler):
 
         self.process_ipv6_normalize()
         self.process_xff()
-
-        if self.server.config['debug']:
-            self.dump_req()
+        self.dump_req()
 
         self.sql_conn = sql.UnladenSqlConn(self.server.sql_engine)
         for handler_name in self.server.config['httpd']['handlers']:
@@ -108,9 +108,9 @@ class UnladenHTTPHandler(BaseHTTPServer.BaseHTTPRequestHandler):
             try:
                 handler_instance = handler_module.UnladenRequestHandler(self)
                 handler_claimed = handler_instance.process_request(self.reqpath)
-            except Exception, err:
-                print traceback.format_exc()
-                self.send_error(httplib.INTERNAL_SERVER_ERROR, err.message)
+            except Exception, e:
+                self.logger.exception(e)
+                self.send_error(httplib.INTERNAL_SERVER_ERROR, e.message)
                 self.sql_conn.close()
                 return
             if handler_claimed:
@@ -146,9 +146,37 @@ class UnladenHTTPServer(SocketServer.ThreadingMixIn, BaseHTTPServer.HTTPServer):
         BaseHTTPServer.HTTPServer.__init__(self, *args)
         if config['httpd']['listen']['ssl']:
             self.socket = ssl.wrap_socket(self.socket, keyfile=config['httpd']['listen']['ssl_key'], certfile=config['httpd']['listen']['ssl_cert'], server_side=True)
-        self.sql_engine = sql.create_engine(config['database']['url'], echo=config['debug'])
+        self.sql_engine = sql.create_engine(config['database']['url'])
 
 
-def run(config):
+def main(args):
+    try:
+        opts, args = getopt.getopt(args, '', ['config-dir=', 'debug'])
+    except getopt.GetoptError as err:
+        print str(err)
+        return(1)
+
+    config_dir = ''
+    config_cl = {}
+    for o, a in opts:
+        if o == '--config-dir':
+            config_dir = a
+        elif o == '--debug':
+            config_cl['debug'] = True
+        else:
+            assert False, "unhandled option"
+
+    config = unladen.config.get_config(config_dir, config_cl)
+
+    if config['debug']:
+        logging.basicConfig(level=logging.DEBUG)
+        logging.getLogger('sqlalchemy.engine').setLevel(logging.DEBUG)
+        logging.getLogger('sqlalchemy.pool').setLevel(logging.DEBUG)
+    else:
+        logging.basicConfig(level=logging.INFO)
+
     httpd = UnladenHTTPServer(config, (config['httpd']['listen']['addr'], config['httpd']['listen']['port']), UnladenHTTPHandler)
-    httpd.serve_forever()
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        return(0)

@@ -25,13 +25,14 @@ import json
 import hashlib
 import time
 import mimetypes
-import traceback
 import httplib
 import random
 import urlparse
+import logging
 
 
 class UnladenRequestHandler():
+    logger = logging.getLogger(__name__)
     authenticated_account = None
 
     def __init__(self, http):
@@ -809,7 +810,7 @@ class UnladenRequestHandler():
         try:
             call_func(*args)
             return True
-        except Exception, err:
-            print traceback.format_exc()
-            self.send_error(httplib.INTERNAL_SERVER_ERROR, err.message)
+        except Exception, e:
+            self.logger.exception(e)
+            self.send_error(httplib.INTERNAL_SERVER_ERROR, e.message)
             return True
