@@ -25,11 +25,18 @@ import json
 import hashlib
 import time
 import mimetypes
-import httplib
+try:
+    import http.client as httplib
+except ImportError:
+    import httplib
 import random
-import urlparse
+try:
+    import urllib.parse as urlparse
+except ImportError:
+    import urlparse
 import logging
 import shutil
+import codecs
 
 
 class UnladenRequestHandler():
@@ -123,7 +130,7 @@ class UnladenRequestHandler():
         total = sum([v for v in m.itervalues()])
         weighted = []
         tp = 0
-        for (k, v) in m.iteritems():
+        for (k, v) in m.items():
             tp = tp + (float(v) / float(total))
             weighted.append((k, tp))
         r = random.random()
@@ -309,7 +316,7 @@ class UnladenRequestHandler():
             user_meta = json.loads(user_meta)
         else:
             user_meta = {}
-        aes_key = meta['aes_key'].decode('hex')
+        aes_key = codecs.getdecoder("hex_codec")(meta['aes_key'])[0]
         self.http.send_response(httplib.OK)
         if 'content_type' in meta:
             self.http.send_header('Content-Type', meta['content_type'].encode('utf-8'))
@@ -442,7 +449,7 @@ class UnladenRequestHandler():
             fn_uuid = str(uuid.uuid4())
         if 'x-unladen-aes-key' in self.http.headers:
             try:
-                aes_key = self.http.headers['x-unladen-aes-key'].decode('hex')
+                aes_key = codecs.getdecoder("hex_codec")(self.http.headers['x-unladen-aes-key'])[0]
             except TypeError:
                 self.send_error(httplib.BAD_REQUEST)
                 return
@@ -452,7 +459,7 @@ class UnladenRequestHandler():
         else:
             aes_key = os.urandom(32)
         meta = {}
-        meta['aes_key'] = aes_key.encode('hex')
+        meta['aes_key'] = codecs.getencoder("hex_codec")(aes_key)[0]
         if 'x-detect-content-type' in self.http.headers and self.http.headers['x-detect-content-type'] == 'true':
             (content_type_guess, content_encoding_guess) = mimetypes.guess_type(object_name)
             if content_type_guess:
@@ -815,7 +822,7 @@ class UnladenRequestHandler():
         try:
             call_func(*args)
             return True
-        except Exception, e:
+        except Exception as e:
             self.logger.exception(e)
-            self.send_error(httplib.INTERNAL_SERVER_ERROR, e.message)
+            self.send_error(httplib.INTERNAL_SERVER_ERROR, str(e))
             return True

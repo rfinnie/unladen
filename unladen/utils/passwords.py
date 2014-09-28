@@ -17,6 +17,7 @@
 # with this program; if not, write to the Free Software Foundation, Inc.,
 # 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 
+from __future__ import print_function
 import os
 import hashlib
 import base64
@@ -92,8 +93,8 @@ if __name__ == '__main__':
     pw2 = getpass.getpass('Retype password: ')
     assert pw == pw2
     hash = hash_password(pw)
-    print 'Password hash: %s' % hash
+    print('Password hash: %s' % hash)
     if check_password(hash, pw):
-        print 'Verification succeeded'
+        print('Verification succeeded')
     else:
-        print 'Verification FAILED'
+        print('Verification FAILED')

@@ -18,7 +18,10 @@
 # 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 
 import uuid
-import httplib
+try:
+    import http.client as httplib
+except ImportError:
+    import httplib
 import unladen.sql as sql
 import os
 import time

@@ -17,12 +17,24 @@
 # with this program; if not, write to the Free Software Foundation, Inc.,
 # 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 
-import BaseHTTPServer
-import SocketServer
-import urlparse
-import urllib
+from __future__ import print_function
+try:
+    import http.server as BaseHTTPServer
+except ImportError:
+    import BaseHTTPServer
+try:
+    import socketserver as SocketServer
+except ImportError:
+    import SocketServer
+try:
+    import urllib.parse as urlparse
+except ImportError:
+    import urlparse
 import threading
-import httplib
+try:
+    import http.client as httplib
+except ImportError:
+    import httplib
 import ssl
 import unladen.sql as sql
 import unladen.config
@@ -49,7 +61,7 @@ class UnladenHTTPHandler(BaseHTTPServer.BaseHTTPRequestHandler):
         self.logger.debug('    URL: %s' % repr(self.url))
         self.logger.debug('    Processed path: %s' % self.reqpath)
         self.logger.debug('    Query items: %s' % repr(self.query))
-        self.logger.debug('    Headers: %s' % repr(self.headers.dict))
+        self.logger.debug('    Headers: %s' % repr({k: v for (k, v) in self.headers.items()}))
 
     def log_request(self, code='-', size='-'):
         """Log an accepted request."""
@@ -86,7 +98,7 @@ class UnladenHTTPHandler(BaseHTTPServer.BaseHTTPRequestHandler):
 
     def process_command(self):
         self.url = urlparse.urlparse(self.path)
-        self.reqpath = urllib.unquote(self.url.path).decode('utf-8')
+        self.reqpath = urlparse.unquote(self.url.path).decode('utf-8')
         self.query = urlparse.parse_qs(self.url.query)
         q = urlparse.parse_qs(self.url.query)
         self.query = {}
@@ -108,9 +120,9 @@ class UnladenHTTPHandler(BaseHTTPServer.BaseHTTPRequestHandler):
             try:
                 handler_instance = handler_module.UnladenRequestHandler(self)
                 handler_claimed = handler_instance.process_request(self.reqpath)
-            except Exception, e:
+            except Exception as e:
                 self.logger.exception(e)
-                self.send_error(httplib.INTERNAL_SERVER_ERROR, e.message)
+                self.send_error(httplib.INTERNAL_SERVER_ERROR, str(e))
                 self.sql_conn.close()
                 return
             if handler_claimed:
@@ -153,7 +165,7 @@ def main(args):
     try:
         opts, args = getopt.getopt(args, '', ['config-dir=', 'debug'])
     except getopt.GetoptError as err:
-        print str(err)
+        print(str(err))
         return(1)
 
     config_dir = ''

@@ -17,6 +17,7 @@
 # with this program; if not, write to the Free Software Foundation, Inc.,
 # 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 
+from __future__ import print_function
 import unladen.config
 import getopt
 import unladen.sql as sql
@@ -24,9 +25,15 @@ import os
 import shutil
 import random
 import time
-import httplib
+try:
+    import http.client as httplib
+except ImportError:
+    import httplib
 import json
-import urlparse
+try:
+    import urllib.parse as urlparse
+except ImportError:
+    import urlparse
 import hashlib
 import threading
 
@@ -42,10 +49,10 @@ class UnladenMaint():
 
     def random_weighted(self, m):
         """Return a weighted random key."""
-        total = sum([v for v in m.itervalues()])
+        total = sum([v for v in m.values()])
         weighted = []
         tp = 0
-        for (k, v) in m.iteritems():
+        for (k, v) in m.items():
             tp = tp + (float(v) / float(total))
             weighted.append((k, tp))
         r = random.random()
@@ -83,7 +90,7 @@ class UnladenMaint():
         self.conn.execute(sql.tokens_cache.delete().where(
             sql.tokens_cache.c.expires < time_target
         ))
-        print 'Deleted expired tokens'
+        print('Deleted expired tokens')
 
     def peers_maint(self):
         self.cluster_peers_cache = {}
@@ -123,7 +130,7 @@ class UnladenMaint():
                 h.putheader('X-Auth-Key', self.config['peers'][peer]['auth']['password'])
                 h.endheaders()
                 res = h.getresponse()
-                print res.getheaders()
+                print(res.getheaders())
                 token = res.getheader('x-auth-token')
                 token_expires = now + 86400
                 storage_url = res.getheader('x-storage-url')
@@ -136,7 +143,7 @@ class UnladenMaint():
             h.putheader('X-Auth-Token', token)
             h.endheaders()
             res = h.getresponse()
-            print res.getheaders()
+            print(res.getheaders())
             total_size = int(res.getheader('x-unladen-node-capacity'))
             used_size = int(res.getheader('x-container-bytes-used'))
             if peer in sql_peers:
@@ -190,15 +197,15 @@ class UnladenMaint():
 
         staging_delete = []
         if len(toadd) > 0:
-            print 'Starting threads...'
+            print('Starting threads...')
             for (fn_uuid, peer, existing_peers, bytes_disk, md5_hash) in toadd:
                 self.sema.acquire(blocking=True)
                 t = threading.Thread(target=self.replication_add_thread, args=(fn_uuid, peer, existing_peers, bytes_disk, md5_hash))
                 t.start()
-            print 'Waiting for threads to finish...'
+            print('Waiting for threads to finish...')
             while threading.active_count() > 1:
                 time.sleep(0.5)
-            print 'All threads done.'
+            print('All threads done.')
             for (fn_uuid, peer, existing_peers, bytes_disk, md5_hash) in toadd:
                 (meta,) = self.conn.execute(sql.select([
                     sql.objects.c.meta
@@ -216,17 +223,17 @@ class UnladenMaint():
                     staging_delete.append(fn_uuid)
 
         if len(todel) > 0:
-            print 'Starting threads...'
+            print('Starting threads...')
             for (fn_uuid, peer) in todel:
                 if not peer in self.config['peers']:
                     continue
                 self.sema.acquire(blocking=True)
                 t = threading.Thread(target=self.replication_del_thread, args=(fn_uuid, peer))
                 t.start()
-            print 'Waiting for threads to finish...'
+            print('Waiting for threads to finish...')
             while threading.active_count() > 1:
                 time.sleep(0.5)
-            print 'All threads done.'
+            print('All threads done.')
             for (fn_uuid, peer) in todel:
                 (meta,) = self.conn.execute(sql.select([
                     sql.objects.c.meta
@@ -248,7 +255,7 @@ class UnladenMaint():
 
     def replication_del_thread(self, fn_uuid, peer):
         if True:
-            print '%s DEL %s %s' % (repr(threading.current_thread()), fn_uuid, peer)
+            print('%s DEL %s %s' % (repr(threading.current_thread()), fn_uuid, peer))
             peer_storage_url = self.cluster_peers_cache[peer][1]
             peer_token = self.cluster_peers_cache[peer][2]
             peer_url = urlparse.urlparse(peer_storage_url)
@@ -269,7 +276,7 @@ class UnladenMaint():
             while len(peer_candidates) > 0:
                 remote_peer = random.choice(peer_candidates)
                 peer_candidates.remove(remote_peer)
-                print '%s PULL %s %s' % (repr(threading.current_thread()), fn_uuid, remote_peer)
+                print('%s PULL %s %s' % (repr(threading.current_thread()), fn_uuid, remote_peer))
                 peer_storage_url = self.cluster_peers_cache[remote_peer][1]
                 peer_token = self.cluster_peers_cache[remote_peer][2]
                 peer_url = urlparse.urlparse(peer_storage_url)
@@ -298,7 +305,7 @@ class UnladenMaint():
                     os.remove(os.path.join(contentdir, '%s.new' % fn_uuid))
         if not os.path.isfile(os.path.join(contentdir, fn_uuid)):
             raise Exception('Could not retrieve remote file')
-        print '%s ADD %s %s %s' % (repr(threading.current_thread()), fn_uuid, peer, md5_hash)
+        print('%s ADD %s %s %s' % (repr(threading.current_thread()), fn_uuid, peer, md5_hash))
         peer_storage_url = self.cluster_peers_cache[peer][1]
         peer_token = self.cluster_peers_cache[peer][2]
         peer_url = urlparse.urlparse(peer_storage_url)
@@ -326,7 +333,7 @@ class UnladenMaint():
         ).values(
             deleted=True
         ))
-        print 'Marked expired objects as deleted'
+        print('Marked expired objects as deleted')
 
     def purge_deleted_objects(self):
         to_purge = []
@@ -339,7 +346,7 @@ class UnladenMaint():
             meta = json.loads(meta)
             to_purge.append((fn_uuid, meta))
         if len(to_purge) > 0:
-            print 'Starting threads...'
+            print('Starting threads...')
             for (fn_uuid, meta) in to_purge:
                 for peer in meta['disk_peers']:
                     if not peer in self.config['peers']:
@@ -347,10 +354,10 @@ class UnladenMaint():
                     self.sema.acquire(blocking=True)
                     t = threading.Thread(target=self.purge_thread, args=(fn_uuid, peer))
                     t.start()
-            print 'Waiting for threads to finish...'
+            print('Waiting for threads to finish...')
             while threading.active_count() > 1:
                 time.sleep(0.5)
-            print 'All threads done.'
+            print('All threads done.')
             for (fn_uuid, meta) in to_purge:
                 self.conn.execute(sql.objects.delete().where(
                     sql.objects.c.uuid == fn_uuid
@@ -358,12 +365,12 @@ class UnladenMaint():
                 contentdir = os.path.join(self.config['staging_files_dir'], fn_uuid[0:2], fn_uuid[2:4])
                 if os.path.isfile(os.path.join(contentdir, fn_uuid)):
                     os.remove(os.path.join(contentdir, fn_uuid))
-        print 'Purged %d objects' % len(to_purge)
+        print('Purged %d objects' % len(to_purge))
 
     def purge_thread(self, fn_uuid, peer):
         if True:
             if True:
-                print '%s PURGE %s %s' % (repr(threading.current_thread()), fn_uuid, peer)
+                print('%s PURGE %s %s' % (repr(threading.current_thread()), fn_uuid, peer))
                 peer_storage_url = self.cluster_peers_cache[peer][1]
                 peer_token = self.cluster_peers_cache[peer][2]
                 peer_url = urlparse.urlparse(peer_storage_url)
@@ -407,23 +414,23 @@ class UnladenMaint():
             bytes_pct = float(bytes) / float(total_bytes)
             config_pct = float(self.config['stores'][store]['size']) / float(total_config_bytes)
             config_pct_delta = bytes_pct - config_pct
-            print '%s: %d objects (%0.02f%%), %d bytes (%0.02f%%, %0.02f%% from config)' % (store, objects, objects_pct * 100.0, bytes, bytes_pct * 100.0, config_pct_delta * 100.0)
+            print('%s: %d objects (%0.02f%%), %d bytes (%0.02f%%, %0.02f%% from config)' % (store, objects, objects_pct * 100.0, bytes, bytes_pct * 100.0, config_pct_delta * 100.0))
             should_have = int(float(total_bytes) * config_pct)
-            print '    Should have %d bytes' % should_have
+            print('    Should have %d bytes' % should_have)
             transfer = bytes - should_have
             transfer_d[store] = transfer
             if transfer > 0:
-                print '    Transfer %d bytes out' % abs(transfer)
+                print('    Transfer %d bytes out' % abs(transfer))
                 total_transfer_out = total_transfer_out + abs(transfer)
             else:
-                print '    Transfer %d bytes in' % abs(transfer)
+                print('    Transfer %d bytes in' % abs(transfer))
                 total_transfer_in = total_transfer_in + abs(transfer)
             if abs(config_pct_delta) > 0.01:
                 rebalance_stores = True
         if rebalance_stores:
-            print 'Time to rebalance the stores'
+            print('Time to rebalance the stores')
         else:
-            print 'Stores are sufficiently balanced'
+            print('Stores are sufficiently balanced')
             return
         transfer_orders = []
         for store_from in transfer_d:
@@ -434,7 +441,7 @@ class UnladenMaint():
                 if transfer_d[store_to] > 0:
                     continue
                 x = int(float(abs(transfer_d[store_to])) / float(total_transfer_in) * float(transfer_d[store_from]))
-                print 'Transfer %d bytes from %s to %s' % (x, store_from, store_to)
+                print('Transfer %d bytes from %s to %s' % (x, store_from, store_to))
                 if x > 0:
                     stores_transfer_to[store_to] = x
             bytes_left = x
@@ -456,7 +463,7 @@ class UnladenMaint():
                         break
                 if not store_to:
                     continue
-                print 'Move %s (%d) from %s to %s' % (fn_uuid, bytes, store_from, store_to)
+                print('Move %s (%d) from %s to %s' % (fn_uuid, bytes, store_from, store_to))
                 transfer_orders.append((fn_uuid, store_from, store_to))
                 bytes_left = bytes_left - bytes
                 if bytes_left <= 0:
@@ -466,11 +473,11 @@ class UnladenMaint():
                 if len(stores_transfer_to) == 0:
                     res.close()
                     break
-        print ''
-        print ''
+        print('')
+        print('')
         random.shuffle(transfer_orders)
         for (fn_uuid, store_from, store_to) in transfer_orders:
-            print '%s %s %s' % (fn_uuid, store_from, store_to)
+            print('%s %s %s' % (fn_uuid, store_from, store_to))
             store_dir_from = self.config['stores'][store_from]['directory']
             contentdir_from = os.path.join(store_dir_from, fn_uuid[0:2], fn_uuid[2:4])
             store_dir_to = self.config['stores'][store_to]['directory']
@@ -490,7 +497,7 @@ def main(args):
     try:
         opts, args = getopt.getopt(args, '', ['config-dir=', 'debug'])
     except getopt.GetoptError as err:
-        print str(err)
+        print(str(err))
         return(0)
 
     config_dir = ''

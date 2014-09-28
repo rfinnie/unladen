@@ -65,7 +65,7 @@ def dict_merge(s, m):
     if not isinstance(m, dict):
         return m
     out = copy.deepcopy(s)
-    for k, v in m.iteritems():
+    for k, v in m.items():
         if k in out and isinstance(out[k], dict):
             out[k] = dict_merge(out[k], v)
         else:
@@ -83,8 +83,10 @@ def get_config(config_dir='', config_cl={}):
         config_dir = DEFAULT_CONFIG_DIR
     json_file = os.path.join(config_dir, 'config.json')
     if os.path.isfile(json_file):
-        with open(json_file, 'rb') as r:
-            config = dict_merge(config, json.load(r))
+        res = open(json_file, 'rb').read()
+        if type(res) == bytes:
+            res = res.decode('utf-8')
+        config = dict_merge(config, json.loads(res))
 
     # Merge anything from the command line
     config = dict_merge(config, config_cl)
