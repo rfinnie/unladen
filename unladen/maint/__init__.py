@@ -183,7 +183,7 @@ class UnladenMaint():
             new_peers = self.choose_peers(existing_peers, peer_weights, 3.0)
             for peer in new_peers:
                 if not peer in existing_peers:
-                    toadd.append((fn_uuid, peer, existing_peers))
+                    toadd.append((fn_uuid, peer, existing_peers, meta['disk_bytes'], meta['disk_hash']))
             for peer in existing_peers:
                 if not peer in new_peers:
                     todel.append((fn_uuid, peer))
@@ -191,15 +191,15 @@ class UnladenMaint():
         staging_delete = []
         if len(toadd) > 0:
             print 'Starting threads...'
-            for (fn_uuid, peer, existing_peers) in toadd:
+            for (fn_uuid, peer, existing_peers, bytes_disk, md5_hash) in toadd:
                 self.sema.acquire(blocking=True)
-                t = threading.Thread(target=self.replication_add_thread, args=(fn_uuid, peer, existing_peers))
+                t = threading.Thread(target=self.replication_add_thread, args=(fn_uuid, peer, existing_peers, bytes_disk, md5_hash))
                 t.start()
             print 'Waiting for threads to finish...'
             while threading.active_count() > 1:
                 time.sleep(0.5)
             print 'All threads done.'
-            for (fn_uuid, peer, existing_peers) in toadd:
+            for (fn_uuid, peer, existing_peers, bytes_disk, md5_hash) in toadd:
                 (meta,) = self.conn.execute(sql.select([
                     sql.objects.c.meta
                 ]).where(
@@ -262,11 +262,13 @@ class UnladenMaint():
             res = h.getresponse()
             self.sema.release()
 
-    def replication_add_thread(self, fn_uuid, peer, existing_peers):
-        if True:
-            contentdir = os.path.join(self.config['staging_files_dir'], fn_uuid[0:2], fn_uuid[2:4])
-            if not os.path.isfile(os.path.join(contentdir, fn_uuid)):
-                remote_peer = random.choice(existing_peers)
+    def replication_add_thread(self, fn_uuid, peer, existing_peers, bytes_disk, md5_hash):
+        contentdir = os.path.join(self.config['staging_files_dir'], fn_uuid[0:2], fn_uuid[2:4])
+        if not os.path.isfile(os.path.join(contentdir, fn_uuid)):
+            peer_candidates = [x for x in existing_peers]
+            while len(peer_candidates) > 0:
+                remote_peer = random.choice(peer_candidates)
+                peer_candidates.remove(remote_peer)
                 print '%s PULL %s %s' % (repr(threading.current_thread()), fn_uuid, remote_peer)
                 peer_storage_url = self.cluster_peers_cache[remote_peer][1]
                 peer_token = self.cluster_peers_cache[remote_peer][2]
@@ -279,39 +281,43 @@ class UnladenMaint():
                 h.putheader('X-Auth-Token', peer_token)
                 h.endheaders()
                 r = h.getresponse()
-                with open(os.path.join(contentdir, fn_uuid), 'wb') as w:
+                bytesread = 0
+                m = hashlib.md5()
+                with open(os.path.join(contentdir, '%s.new' % fn_uuid), 'wb') as w:
                     blk = r.read(1024)
                     while blk:
+                        m.update(blk)
+                        bytesread = bytesread + len(blk)
                         w.write(blk)
                         blk = r.read(1024)
-            bytes_disk = os.path.getsize(os.path.join(contentdir, fn_uuid))
-            m = hashlib.md5()
-            with open(os.path.join(contentdir, fn_uuid), 'rb') as r:
-                blk = r.read(m.block_size)
-                while blk:
-                    m.update(blk)
-                    blk = r.read(m.block_size)
-            md5_hash = m.hexdigest()
-            print '%s ADD %s %s %s' % (repr(threading.current_thread()), fn_uuid, peer, md5_hash)
-            peer_storage_url = self.cluster_peers_cache[peer][1]
-            peer_token = self.cluster_peers_cache[peer][2]
-            peer_url = urlparse.urlparse(peer_storage_url)
-            if peer_url.scheme == 'https':
-                h = httplib.HTTPSConnection(peer_url.netloc, timeout=5)
-            else:
-                h = httplib.HTTPConnection(peer_url.netloc, timeout=5)
-            h.putrequest('PUT', '%s/%s/%s' % (peer_url.path, '808f1b75-a011-4ea7-82a5-e6aad1092fea', fn_uuid))
-            h.putheader('Content-Length', bytes_disk)
-            h.putheader('X-Auth-Token', peer_token)
-            h.putheader('ETag', md5_hash)
-            h.endheaders()
-            with open(os.path.join(contentdir, fn_uuid), 'rb') as r:
+                md5_hash_test = m.hexdigest()
+                if (bytesread == bytes_disk) and (md5_hash == md5_hash_test):
+                    shutil.move(os.path.join(contentdir, '%s.new' % fn_uuid), os.path.join(contentdir, fn_uuid))
+                    break
+                else:
+                    os.remove(os.path.join(contentdir, '%s.new' % fn_uuid))
+        if not os.path.isfile(os.path.join(contentdir, fn_uuid)):
+            raise Exception('Could not retrieve remote file')
+        print '%s ADD %s %s %s' % (repr(threading.current_thread()), fn_uuid, peer, md5_hash)
+        peer_storage_url = self.cluster_peers_cache[peer][1]
+        peer_token = self.cluster_peers_cache[peer][2]
+        peer_url = urlparse.urlparse(peer_storage_url)
+        if peer_url.scheme == 'https':
+            h = httplib.HTTPSConnection(peer_url.netloc, timeout=5)
+        else:
+            h = httplib.HTTPConnection(peer_url.netloc, timeout=5)
+        h.putrequest('PUT', '%s/%s/%s' % (peer_url.path, '808f1b75-a011-4ea7-82a5-e6aad1092fea', fn_uuid))
+        h.putheader('Content-Length', bytes_disk)
+        h.putheader('X-Auth-Token', peer_token)
+        h.putheader('ETag', md5_hash)
+        h.endheaders()
+        with open(os.path.join(contentdir, fn_uuid), 'rb') as r:
+            blk = r.read(1024)
+            while blk:
+                h.send(blk)
                 blk = r.read(1024)
-                while blk:
-                    h.send(blk)
-                    blk = r.read(1024)
-            res = h.getresponse()
-            self.sema.release()
+        res = h.getresponse()
+        self.sema.release()
 
     def delete_expired_objects(self):
         now = time.time()

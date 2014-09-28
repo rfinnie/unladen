@@ -29,6 +29,7 @@ import httplib
 import random
 import urlparse
 import logging
+import shutil
 
 
 class UnladenRequestHandler():
@@ -451,7 +452,6 @@ class UnladenRequestHandler():
         else:
             aes_key = os.urandom(32)
         meta = {}
-        meta_file = {}
         meta['aes_key'] = aes_key.encode('hex')
         if 'x-detect-content-type' in self.http.headers and self.http.headers['x-detect-content-type'] == 'true':
             (content_type_guess, content_encoding_guess) = mimetypes.guess_type(object_name)
@@ -484,7 +484,7 @@ class UnladenRequestHandler():
         m = hashlib.md5()
         m_file = hashlib.md5()
         bytes_disk = 0
-        with open(os.path.join(contentdir, fn_uuid), 'wb') as w:
+        with open(os.path.join(contentdir, '%s.new' % fn_uuid), 'wb') as w:
             m_file.update(iv)
             w.write(iv)
             bytes_disk = bytes_disk + len(iv)
@@ -509,10 +509,13 @@ class UnladenRequestHandler():
         md5_hash_file = m_file.hexdigest()
         if 'etag' in self.http.headers:
             if not self.http.headers['etag'].lower() == md5_hash:
+                os.remove(os.path.join(contentdir, '%s.new' % fn_uuid))
                 self.send_error(httplib.CONFLICT)
                 return
+        shutil.move(os.path.join(contentdir, '%s.new' % fn_uuid), os.path.join(contentdir, fn_uuid))
         meta['hash'] = md5_hash
-        meta_file['hash'] = md5_hash_file
+        meta['disk_hash'] = md5_hash_file
+        meta['disk_bytes'] = bytes_disk
         meta['disk_peers'] = []
         res = self.conn.execute(sql.select([
             sql.objects.c.uuid
@@ -593,7 +596,7 @@ class UnladenRequestHandler():
             os.makedirs(contentdir)
         m_file = hashlib.md5()
         bytes_disk = 0
-        with open(os.path.join(contentdir, fn_uuid), 'wb') as w:
+        with open(os.path.join(contentdir, '%s.new' % fn_uuid), 'wb') as w:
             bytesread = 0
             toread = 1024
             if (bytesread + toread) > length:
@@ -612,8 +615,10 @@ class UnladenRequestHandler():
         md5_hash_file = m_file.hexdigest()
         if 'etag' in self.http.headers:
             if not self.http.headers['etag'].lower() == md5_hash_file:
+                os.remove(os.path.join(contentdir, '%s.new' % fn_uuid))
                 self.send_error(httplib.CONFLICT)
                 return
+        shutil.move(os.path.join(contentdir, '%s.new' % fn_uuid), os.path.join(contentdir, fn_uuid))
         meta_file['hash'] = md5_hash_file
         with self.conn.begin():
             self.conn.execute(sql.files.insert().values(
