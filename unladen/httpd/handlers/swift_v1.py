@@ -37,6 +37,7 @@ except ImportError:
 import logging
 import shutil
 import codecs
+import xml.etree.cElementTree
 
 
 class UnladenRequestHandler():
@@ -62,10 +63,12 @@ class UnladenRequestHandler():
         code -- Numeric HTTP code.
         message -- Optional message text.
         """
-        use_json = False
+        out_format = 'text'
         if 'format' in self.http.query:
             if 'json' in self.http.query['format']:
-                use_json = True
+                out_format = 'json'
+            elif 'xml' in self.http.query['format']:
+                out_format = 'xml'
 
         try:
             short, long = self.http.responses[code]
@@ -76,9 +79,19 @@ class UnladenRequestHandler():
         explain = long
         self.http.log_error('code %d, message %s', code, message)
         self.http.send_response(code, message)
-        if use_json:
+        if out_format == 'json':
             content = json.dumps({'code': code, 'message': message, 'explain': explain}).encode('utf-8')
             self.http.send_header('Content-Type', 'application/json; charset=utf-8')
+        elif out_format == 'xml':
+            x_root = xml.etree.cElementTree.Element('error')
+            x_item_code = xml.etree.cElementTree.SubElement(x_root, 'code')
+            x_item_code.text = str(code)
+            x_item_message = xml.etree.cElementTree.SubElement(x_root, 'message')
+            x_item_message.text = str(message)
+            x_item_explain = xml.etree.cElementTree.SubElement(x_root, 'explain')
+            x_item_explain.text = str(explain)
+            content = '<?xml version="1.0" encoding="UTF-8"?>' + xml.etree.cElementTree.tostring(x_root)
+            self.http.send_header('Content-Type', 'application/xml; charset=utf-8')
         else:
             content = ('Error %(code)d (%(message)s)\n\n%(explain)s\n' %
                        {'code': code, 'message': message, 'explain': explain})
@@ -88,7 +101,7 @@ class UnladenRequestHandler():
         if self.http.command != 'HEAD' and code >= 200 and code not in (204, 304):
             self.http.wfile.write(content)
 
-    def output_file_list(self, data):
+    def output_file_list(self, data, xml_root_id='account', xml_root_name='unknown', xml_item_id='container'):
         """Output a (possibly formatted) file list.
 
         Outputs a JSON dump of the data if requested, otherwise
@@ -98,17 +111,32 @@ class UnladenRequestHandler():
         data -- List of dicts containing file data.  "name" is expected
                 to be in each dict, at the very least.
         """
-        use_json = False
+        out_format = 'text'
         if 'format' in self.http.query:
             if 'json' in self.http.query['format']:
-                use_json = True
+                out_format = 'json'
+            elif 'xml' in self.http.query['format']:
+                out_format = 'xml'
         self.http.send_response(httplib.OK)
-        if use_json:
+        if out_format == 'json':
             out = json.dumps(data).encode('utf-8')
             self.http.send_header('Content-Type', 'application/json; charset=utf-8')
             self.http.send_header('Content-Length', len(out))
             self.http.end_headers()
-            self.http.wfile.write(json.dumps(data).encode('utf-8'))
+            self.http.wfile.write(out)
+        elif out_format == 'xml':
+            x_root = xml.etree.cElementTree.Element(xml_root_id)
+            x_root.set('name', xml_root_name)
+            for item in data:
+                x_item = xml.etree.cElementTree.SubElement(x_root, xml_item_id)
+                for (k, v) in item.items():
+                    x_k = xml.etree.cElementTree.SubElement(x_item, k)
+                    x_k.text = str(v)
+            out = '<?xml version="1.0" encoding="UTF-8"?>' + xml.etree.cElementTree.tostring(x_root)
+            self.http.send_header('Content-Type', 'application/xml; charset=utf-8')
+            self.http.send_header('Content-Length', len(out))
+            self.http.end_headers()
+            self.http.wfile.write(out)
         else:
             out = ''
             for row in data:
@@ -117,6 +145,17 @@ class UnladenRequestHandler():
             self.http.send_header('Content-Length', len(out))
             self.http.end_headers()
             self.http.wfile.write(out)
+
+    def apply_list_query_params(self, s, column):
+        if 'marker' in self.http.query:
+            s = s.where(column > self.http.query['marker'][0])
+        if 'end_marker' in self.http.query:
+            s = s.where(column < self.http.query['end_marker'][0])
+        if 'limit' in self.http.query:
+            s = s.limit(int(self.http.query['limit'][0]))
+        else:
+            s = s.limit(10000)
+        return s
 
     def choose_store(self):
         """Choose a random size-weighted store."""
@@ -211,11 +250,7 @@ class UnladenRequestHandler():
 
     def do_get_account(self, account_name):
         """Handle account-level GET operations."""
-        if 'marker' in self.http.query:
-            self.output_file_list([])
-            return
-        out = []
-        for (container_name, count, bytes) in self.conn.execute(sql.select([
+        s = sql.select([
             sql.objects.c.container,
             sql.count('*'),
             sql.sum(sql.objects.c.bytes)
@@ -223,17 +258,32 @@ class UnladenRequestHandler():
             sql.objects.c.account == account_name
         ).where(
             sql.objects.c.deleted == False
-        ).group_by(sql.objects.c.container)):
+        ).group_by(
+            sql.objects.c.container
+        ).order_by(
+            sql.objects.c.container
+        )
+        s = self.apply_list_query_params(s, sql.objects.c.container)
+        out = []
+        for (container_name, count, bytes) in self.conn.execute(s):
             out.append({'name': container_name, 'count': int(count), 'bytes': int(bytes)})
-        self.output_file_list(out)
+        self.output_file_list(out, 'account', account_name, 'container')
 
     def do_get_container(self, account_name, container_name):
         """Handle container-level GET operations."""
-        if 'marker' in self.http.query:
-            self.output_file_list([])
+        (objects,) = self.conn.execute(sql.select([
+            sql.count('*'),
+        ]).where(
+            sql.objects.c.account == account_name
+        ).where(
+            sql.objects.c.container == container_name
+        ).where(
+            sql.objects.c.deleted == False
+        )).fetchone()
+        if objects == 0:
+            self.send_error(httplib.NOT_FOUND)
             return
-        out = []
-        for (name, bytes, last_modified, expires, meta) in self.conn.execute(sql.select([
+        s = sql.select([
             sql.objects.c.name,
             sql.objects.c.bytes,
             sql.objects.c.last_modified,
@@ -245,7 +295,12 @@ class UnladenRequestHandler():
             sql.objects.c.container == container_name
         ).where(
             sql.objects.c.deleted == False
-        )):
+        ).order_by(
+            sql.objects.c.name
+        )
+        s = self.apply_list_query_params(s, sql.objects.c.name)
+        out = []
+        for (name, bytes, last_modified, expires, meta) in self.conn.execute(s):
             if expires and expires <= time.time():
                 continue
             if meta:
@@ -256,32 +311,30 @@ class UnladenRequestHandler():
             if 'content_type' in meta:
                 content_type = meta['content_type']
             out.append({'name': name, 'hash': meta['hash'], 'bytes': int(bytes), 'last_modified': float(last_modified), 'content_type': content_type})
-        if len(out) == 0:
-            self.send_error(httplib.NOT_FOUND)
-            return
-        self.output_file_list(out)
+        self.output_file_list(out, 'container', container_name, 'object')
 
     def do_get_file_container(self):
         """Handle file container-level GET operations."""
-        if 'marker' in self.http.query:
-            self.output_file_list([])
-            return
-        out = []
-        for (fn_uuid, bytes, last_modified, meta) in self.conn.execute(sql.select([
+        s = sql.select([
             sql.files.c.uuid,
             sql.files.c.bytes_disk,
             sql.files.c.created,
             sql.files.c.meta
         ]).where(
             sql.files.c.uploader == self.authenticated_account
-        )):
+        ).order_by(
+            sql.files.c.uuid
+        )
+        s = self.apply_list_query_params(s, sql.files.c.uuid)
+        out = []
+        for (fn_uuid, bytes, last_modified, meta) in self.conn.execute(s):
             if meta:
                 meta = json.loads(meta)
             else:
                 meta = {}
             content_type = 'application/octet-stream'
             out.append({'name': fn_uuid, 'hash': meta['hash'], 'bytes': int(bytes), 'last_modified': float(last_modified), 'content_type': content_type})
-        self.output_file_list(out)
+        self.output_file_list(out, 'container', container_name, 'object')
 
     def do_get_object(self, account_name, container_name, object_name):
         """Handle object-level GET operations."""
@@ -785,10 +838,6 @@ class UnladenRequestHandler():
         if len(r_fn) == 1:
             self.send_error(httplib.BAD_REQUEST)
             return True
-        if 'format' in self.http.query:
-            if not 'json' in self.http.query['format']:
-                self.send_error(httplib.NOT_IMPLEMENTED)
-                return True
         mode = self.http.command.lower()
         if len(r_fn) == 2:
             level = 'account'
