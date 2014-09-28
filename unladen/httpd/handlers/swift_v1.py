@@ -90,7 +90,7 @@ class UnladenRequestHandler():
             x_item_message.text = str(message)
             x_item_explain = xml.etree.cElementTree.SubElement(x_root, 'explain')
             x_item_explain.text = str(explain)
-            content = '<?xml version="1.0" encoding="UTF-8"?>' + xml.etree.cElementTree.tostring(x_root)
+            content = xml.etree.cElementTree.tostring(x_root, encoding='UTF-8')
             self.http.send_header('Content-Type', 'application/xml; charset=utf-8')
         else:
             content = ('Error %(code)d (%(message)s)\n\n%(explain)s\n' %
@@ -131,8 +131,11 @@ class UnladenRequestHandler():
                 x_item = xml.etree.cElementTree.SubElement(x_root, xml_item_id)
                 for (k, v) in item.items():
                     x_k = xml.etree.cElementTree.SubElement(x_item, k)
-                    x_k.text = str(v)
-            out = '<?xml version="1.0" encoding="UTF-8"?>' + xml.etree.cElementTree.tostring(x_root)
+                    if type(v) in (int, float):
+                        x_k.text = str(v)
+                    else:
+                        x_k.text = v
+            out = xml.etree.cElementTree.tostring(x_root, encoding='UTF-8')
             self.http.send_header('Content-Type', 'application/xml; charset=utf-8')
             self.http.send_header('Content-Length', len(out))
             self.http.end_headers()
