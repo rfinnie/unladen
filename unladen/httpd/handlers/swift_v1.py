@@ -38,6 +38,9 @@ import logging
 import shutil
 import codecs
 import xml.etree.cElementTree
+import StringIO
+import gzip
+import zlib
 
 
 class UnladenRequestHandler():
@@ -121,9 +124,6 @@ class UnladenRequestHandler():
         if out_format == 'json':
             out = json.dumps(data).encode('utf-8')
             self.http.send_header('Content-Type', 'application/json; charset=utf-8')
-            self.http.send_header('Content-Length', len(out))
-            self.http.end_headers()
-            self.http.wfile.write(out)
         elif out_format == 'xml':
             x_root = xml.etree.cElementTree.Element(xml_root_id)
             x_root.set('name', xml_root_name)
@@ -137,17 +137,26 @@ class UnladenRequestHandler():
                         x_k.text = v
             out = xml.etree.cElementTree.tostring(x_root, encoding='UTF-8')
             self.http.send_header('Content-Type', 'application/xml; charset=utf-8')
-            self.http.send_header('Content-Length', len(out))
-            self.http.end_headers()
-            self.http.wfile.write(out)
         else:
             out = ''
             for row in data:
                 out += ('%s\n' % row['name']).encode('utf-8')
             self.http.send_header('Content-Type', 'text/plain; charset=utf-8')
-            self.http.send_header('Content-Length', len(out))
-            self.http.end_headers()
-            self.http.wfile.write(out)
+        if 'accept-encoding' in self.http.headers:
+            accepted = [x.strip() for x in self.http.headers['accept-encoding'].split(',')]
+            if 'deflate' in accepted:
+                out = zlib.compress(out)
+                self.http.send_header('Content-Encoding', 'deflate')
+            elif 'gzip' in accepted:
+                sio = StringIO.StringIO()
+                gz = gzip.GzipFile(mode='wb', fileobj=sio)
+                gz.write(out)
+                gz.close()
+                out = sio.getvalue()
+                self.http.send_header('Content-Encoding', 'gzip')
+        self.http.send_header('Content-Length', len(out))
+        self.http.end_headers()
+        self.http.wfile.write(out)
 
     def apply_list_query_params(self, s, column):
         if 'marker' in self.http.query:
