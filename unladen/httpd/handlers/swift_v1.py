@@ -40,7 +40,6 @@ import codecs
 import xml.etree.cElementTree
 import StringIO
 import gzip
-import zlib
 
 
 class UnladenRequestHandler():
@@ -144,10 +143,7 @@ class UnladenRequestHandler():
             self.http.send_header('Content-Type', 'text/plain; charset=utf-8')
         if 'accept-encoding' in self.http.headers:
             accepted = [x.strip() for x in self.http.headers['accept-encoding'].split(',')]
-            if 'deflate' in accepted:
-                out = zlib.compress(out)
-                self.http.send_header('Content-Encoding', 'deflate')
-            elif 'gzip' in accepted:
+            if 'gzip' in accepted:
                 sio = StringIO.StringIO()
                 gz = gzip.GzipFile(mode='wb', fileobj=sio)
                 gz.write(out)
