@@ -50,7 +50,9 @@ DEFAULT_CONFIG = {
             'port': 52777,
             'ssl': False,
             'ssl_key': None,
-            'ssl_cert': None
+            'ssl_cert': None,
+            'ssl_version': None,
+            'ssl_ciphers': None
         },
         'xff_trusted_relays': []
     },

@@ -157,7 +157,16 @@ class UnladenHTTPServer(SocketServer.ThreadingMixIn, BaseHTTPServer.HTTPServer):
         self.config = config
         BaseHTTPServer.HTTPServer.__init__(self, *args)
         if config['httpd']['listen']['ssl']:
-            self.socket = ssl.wrap_socket(self.socket, keyfile=config['httpd']['listen']['ssl_key'], certfile=config['httpd']['listen']['ssl_cert'], server_side=True)
+            kwargs = {
+                'server_side': True,
+                'keyfile': config['httpd']['listen']['ssl_key'],
+                'certfile': config['httpd']['listen']['ssl_cert']
+            }
+            if config['httpd']['listen']['ssl_version']:
+                kwargs['ssl_version'] = getattr(ssl, 'PROTOCOL_%s' % config['httpd']['listen']['ssl_version'])
+            if config['httpd']['listen']['ssl_ciphers']:
+                kwargs['ciphers'] = config['httpd']['listen']['ssl_ciphers']
+            self.socket = ssl.wrap_socket(self.socket, **kwargs)
         self.sql_engine = sql.create_engine(config['database']['url'])
 
 
